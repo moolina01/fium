@@ -1,0 +1,89 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
+}
+
+// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
+// enough when changing adapters.
+// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+model StoreConfig {
+  id          String   @id @default(cuid())
+  shop        String   @unique
+  contactName String
+  phone       String
+  address     String
+  region      String
+  comuna      String
+  zipCode     String
+  pickupNotes String?  // Instrucciones para el courier al retirar (ej: "Tocar timbre, local 5")
+  packageSize String   @default("small")  // Tamaño por defecto del paquete: small | medium | large | xlarge
+  phoneRequiredAck Boolean @default(false) // La tienda confirmó que exige teléfono en el checkout
+  carrierActivatedAck Boolean @default(false) // La tienda confirmó que agregó Fium a su zona de envío
+  // Última vez que Shopify pidió tarifas a Fium en el checkout. Es la señal de que
+  // el carrier no solo está registrado, sino realmente conectado al checkout (zona de envío).
+  lastRateRequestAt DateTime?
+  autoDispatch   Boolean  @default(false)
+  plan           String   @default("none")    // "none" | "starter" | "growth" | "pro"
+  planStatus     String   @default("pending") // "pending" | "active" | "cancelled" | "expired"
+  subscriptionId String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model Delivery {
+  id             String   @id @default(cuid())
+  shop           String
+  orderId        String
+  orderNumber    String
+  customerName   String
+  customerAddress String
+  customerComuna  String
+  uberDeliveryId  String?
+  uberTrackingUrl String?
+  status         String   @default("pending")
+  quoteAmount    Float?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Una orden = un delivery. Evita duplicados por reentrega de webhooks.
+  @@unique([shop, orderId])
+}
+
+// Token OAuth de Uber Direct, app-wide (las credenciales viven en env vars).
+// Se persiste para que sobreviva reinicios/serverless — Uber limita la
+// generación de tokens a 100/hora, así que nunca se genera por request.
+model UberToken {
+  id        String   @id @default(cuid())
+  clientId  String   @unique
+  token     String
+  expiresAt DateTime
+  updatedAt DateTime @updatedAt
+}
