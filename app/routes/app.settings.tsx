@@ -297,13 +297,15 @@ export default function Settings() {
           </Form>
         </Section>
 
-        {/* 4. Modo de despacho */}
-
+        {/* 4. Modo de despacho — OCULTO temporalmente: aún no lanzamos la elección
+            automático/manual. El despacho sigue en "manual" por defecto (autoDispatch=false).
+            Revertir: cambiar `{false && (` por `{true && (` o quitar el wrapper. */}
+        {false && (
         <Section
           title="Modo de despacho"
           description="Cómo se crean los envíos cuando llega una orden"
         >
-          {actionData?.intent === "dispatch" && actionData.success && <Alert type="success">{actionData.success}</Alert>}
+          {actionData?.intent === "dispatch" && actionData?.success && <Alert type="success">{actionData?.success}</Alert>}
           <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
             {([
               { value: "false", label: "Manual", desc: "Las órdenes aparecen en el dashboard y tú decides cuándo crear el envío." },
@@ -342,6 +344,7 @@ export default function Settings() {
             })}
           </div>
         </Section>
+        )}
 
       </div>
     </s-page>

@@ -82,8 +82,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const address1 = (dest.address1 ?? "").trim();
   const city = (dest.city ?? "").trim();
   const postalCode = (dest.postal_code ?? "").trim();
-  if (!address1 || !city || !postalCode) {
-    logDebug("carrier/rates", "dirección incompleta — sin tarifa aún", {
+  // En Chile el código postal casi nunca se llena, y Uber geocodifica bien con
+  // calle + comuna + región. Por eso NO exigimos código postal: solo calle y comuna.
+  // (Antes se exigía postalCode y por eso Fium no cotizaba si el cliente lo dejaba vacío.)
+  if (!address1 || !city) {
+    logDebug("carrier/rates", "dirección incompleta — falta calle o comuna", {
       hasAddress1: !!address1, hasCity: !!city, hasPostal: !!postalCode,
     });
     return Response.json({ rates: [] });

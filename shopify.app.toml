@@ -2,9 +2,9 @@
 
 client_id = "1139f7275aa83f9acb0d3cf003e15947"
 name = "fium"
-# TODO(producción): reemplazar por la URL real antes de subir a App Store review.
-# En dev el CLI la sobreescribe con el tunnel (automatically_update_urls_on_dev = true).
-application_url = "https://example.com"
+# URL de producción (Railway). En dev el CLI la sobreescribe con el tunnel
+# (automatically_update_urls_on_dev = true).
+application_url = "https://fium-production.up.railway.app"
 embedded = true
 
 [build]
@@ -44,4 +44,8 @@ optional_scopes = [ ]
 use_legacy_install_flow = false
 
 [auth]
-redirect_urls = [ ]
+redirect_urls = [
+  "https://fium-production.up.railway.app/auth/callback",
+  "https://fium-production.up.railway.app/auth/shopify/callback",
+  "https://fium-production.up.railway.app/api/auth/callback"
+]
