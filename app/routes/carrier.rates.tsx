@@ -157,9 +157,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           service_name: "Fium — Entrega mismo día",
           service_code: "uber_direct",
           // Shopify interpreta total_price en CENTAVOS (lo divide por 100 al mostrar).
-          // El CLP no tiene centavos, así que el monto en pesos va ×100.
-          // Ej: 3280 CLP → total_price "328000" → Shopify muestra $3.280.
-          total_price: String(Math.round(quote.fee * 100)),
+          // Uber YA devuelve el fee en centavos (ej. 3828 CLP → fee = 382800), así
+          // que se manda tal cual: Shopify ÷100 → 3828 CLP. (Igual que el dashboard,
+          // que muestra fee/100). NO multiplicar por 100.
+          total_price: String(Math.round(quote.fee)),
           currency: "CLP",
           min_delivery_date: quote.dropoffEta || minEta,
           max_delivery_date: quote.dropoffEta || maxEta,
