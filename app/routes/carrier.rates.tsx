@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs } from "react-router";
 import db from "../db.server";
-import { getDeliveryQuote } from "../services/uber-direct.server";
+import { getDeliveryQuote, UberApiError } from "../services/uber-direct.server";
 import type { QuoteResult } from "../services/uber-direct.server";
 import { checkPlanLimit } from "../lib/plan-limits.server";
 import { logError, logInfo, logDebug } from "../lib/logger.server";
@@ -161,7 +161,22 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       ],
     });
   } catch (e) {
-    logError("carrier/rates", e, { shop });
+    // Cuando Uber NO puede cotizar (fuera de cobertura, distancia excedida, sin
+    // couriers o dirección no entregable) lanza un UberApiError. Es un caso de
+    // negocio esperado, no un bug: lo dejamos VISIBLE y claro en los logs de prod
+    // para poder diagnosticar por qué Fium no apareció en un checkout.
+    if (e instanceof UberApiError) {
+      logInfo("carrier/rates/sin-cobertura", "Uber no entregó cotización (probable fuera de cobertura o distancia excedida)", {
+        shop,
+        uberStatus: e.status,           // ej. 400 / 422
+        uberCode: e.code ?? null,       // ej. "address_undeliverable", "no_couriers_available"
+        destino: `${address1}, ${city}`,
+        origen: `${storeConfig.address}, ${storeConfig.comuna}`,
+        detalleUber: e.body?.slice(0, 300),
+      });
+    } else {
+      logError("carrier/rates", e, { shop });
+    }
     return Response.json({ rates: [] });
   }
 };
