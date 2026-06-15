@@ -141,7 +141,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     );
 
     const quote = await Promise.race([quotePromise, timeoutPromise]);
-    logDebug("carrier/rates", "quote OK", { fee: quote.fee, duration: quote.duration });
+    // logInfo (visible en prod) para verificar el monto real que devuelve Uber.
+    logInfo("carrier/rates/quote", "Cotización Uber OK", {
+      feeUber: quote.fee, currency: quote.currency, duration: quote.duration,
+    });
 
     if (!cached) setCached(cacheKey, quote);
 
@@ -153,7 +156,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         {
           service_name: "Fium — Entrega mismo día",
           service_code: "uber_direct",
-          total_price: String(quote.fee), // CLP — sin centavos
+          // Shopify interpreta total_price en CENTAVOS (lo divide por 100 al mostrar).
+          // El CLP no tiene centavos, así que el monto en pesos va ×100.
+          // Ej: 3280 CLP → total_price "328000" → Shopify muestra $3.280.
+          total_price: String(Math.round(quote.fee * 100)),
           currency: "CLP",
           min_delivery_date: quote.dropoffEta || minEta,
           max_delivery_date: quote.dropoffEta || maxEta,
