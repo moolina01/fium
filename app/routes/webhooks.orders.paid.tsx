@@ -1,7 +1,7 @@
 import { authenticate, unauthenticated } from "../shopify.server";
 import type { ActionFunctionArgs } from "react-router";
 import db from "../db.server";
-import { getDeliveryQuote, createDelivery } from "../services/uber-direct.server";
+import { getDeliveryQuote, createDelivery, uberCredsFromConfig } from "../services/uber-direct.server";
 import { logError, logInfo } from "../lib/logger.server";
 import { checkPlanLimit } from "../lib/plan-limits.server";
 import { toPackageSize } from "../lib/package-size";
@@ -90,6 +90,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     quoteAmount?: number;
   };
   try {
+    // Credenciales de Uber de esta tienda. Si no conectó su cuenta, esto lanza y
+    // el delivery queda como "failed" (visible en el dashboard para despacho manual).
+    const creds = uberCredsFromConfig(config);
+
     const pickupAddress = {
       streetAddress: [config.address],
       city: config.comuna,
@@ -103,7 +107,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       zipCode: order.shipping_address.zip,
     };
 
-    const quote = await getDeliveryQuote({ pickupAddress, dropoffAddress });
+    const quote = await getDeliveryQuote(creds, { pickupAddress, dropoffAddress });
 
     // Uber no puede ejecutar el envío sin teléfono. Si la orden no trae el del
     // cliente, usamos el teléfono de la tienda como respaldo y lo dejamos trazado.
@@ -121,7 +125,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       );
     }
 
-    const delivery = await createDelivery({
+    const delivery = await createDelivery(creds, {
       quoteId: quote.id,
       pickupName: config.contactName,
       pickupAddress,

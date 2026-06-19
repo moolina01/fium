@@ -51,6 +51,12 @@ model StoreConfig {
   // el carrier no solo está registrado, sino realmente conectado al checkout (zona de envío).
   lastRateRequestAt DateTime?
   autoDispatch   Boolean  @default(false)
+  // Credenciales de Uber Direct propias de cada tienda. Cada cliente conecta su
+  // cuenta (con su tarjeta) y paga sus envíos directo a Uber. El client_secret se
+  // guarda cifrado (AES-256-GCM, ver app/lib/crypto.server.ts).
+  uberClientId     String?
+  uberClientSecret String?  // cifrado
+  uberCustomerId   String?
   plan           String   @default("none")    // "none" | "starter" | "growth" | "pro"
   planStatus     String   @default("pending") // "pending" | "active" | "cancelled" | "expired"
   subscriptionId String?
@@ -77,8 +83,8 @@ model Delivery {
   @@unique([shop, orderId])
 }
 
-// Token OAuth de Uber Direct, app-wide (las credenciales viven en env vars).
-// Se persiste para que sobreviva reinicios/serverless — Uber limita la
+// Token OAuth de Uber Direct, uno por cuenta de tienda (clave = clientId de esa
+// tienda). Se persiste para que sobreviva reinicios/serverless — Uber limita la
 // generación de tokens a 100/hora, así que nunca se genera por request.
 model UberToken {
   id        String   @id @default(cuid())

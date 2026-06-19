@@ -7,10 +7,11 @@
  *   - Get Started: https://developer.uber.com/docs/deliveries/get-started
  *   - SDK oficial: https://github.com/uber/uber-direct-sdk
  *
- * Variables de entorno requeridas:
- *   UBER_CLIENT_ID      — Client ID del dashboard de Uber Direct (direct.uber.com)
- *   UBER_CLIENT_SECRET   — Client Secret del dashboard
- *   UBER_CUSTOMER_ID     — Customer ID (UUID de la organización)
+ * Credenciales: CADA TIENDA conecta su propia cuenta de Uber Direct. Las
+ * credenciales (client_id, client_secret cifrado, customer_id) viven en
+ * StoreConfig y todas las funciones reciben `creds: UberCreds`. No hay cuenta
+ * global — usa getStoreUberCreds(shop) o uberCredsFromConfig(config) para
+ * obtenerlas.
  *
  * Endpoints:
  *   Auth:            POST https://auth.uber.com/oauth/v2/token
@@ -23,44 +24,88 @@
  */
 
 import db from "../db.server";
+import { decrypt } from "../lib/crypto.server";
 
 // ─── URLs ────────────────────────────────────────────────────────────────────
 
 const UBER_AUTH_URL = "https://auth.uber.com/oauth/v2/token";
 const UBER_API_BASE = "https://api.uber.com/v1";
 
-// ─── Auth ────────────────────────────────────────────────────────────────────
-// Tokens duran 30 días (2,592,000 seg). Se cachean en memoria (L1) y en DB (L2).
-// Uber rate-limita la generación de tokens a 100 req/hora — por eso persistimos
-// en DB: en serverless/multi-instancia el cache en memoria no alcanza.
+// ─── Credenciales por tienda ──────────────────────────────────────────────────
+// Cada tienda conecta su propia cuenta de Uber Direct (con su tarjeta), así que
+// todas las llamadas a Uber se hacen con las credenciales de esa tienda — no hay
+// una cuenta global. Las credenciales viven cifradas en StoreConfig.
 
-let cachedToken: { value: string; expiresAt: number } | null = null;
+export type UberCreds = {
+  clientId: string;
+  clientSecret: string;
+  customerId: string;
+};
 
-async function getAccessToken(): Promise<string> {
-  // L1 — cache en memoria del proceso
-  if (cachedToken && Date.now() < cachedToken.expiresAt) {
-    return cachedToken.value;
-  }
-
-  const clientId = process.env.UBER_CLIENT_ID;
-  const clientSecret = process.env.UBER_CLIENT_SECRET;
-
-  if (!clientId || !clientSecret) {
-    throw new Error(
-      "Faltan UBER_CLIENT_ID y/o UBER_CLIENT_SECRET en las variables de entorno"
+/** La tienda no terminó de conectar su cuenta de Uber Direct. */
+export class UberNotConfiguredError extends Error {
+  constructor(shop?: string) {
+    super(
+      shop
+        ? `La tienda ${shop} no tiene conectada su cuenta de Uber Direct`
+        : "La tienda no tiene conectada su cuenta de Uber Direct"
     );
+    this.name = "UberNotConfiguredError";
+  }
+}
+
+/** Extrae y descifra las credenciales de un StoreConfig ya cargado. */
+export function uberCredsFromConfig(config: {
+  shop?: string;
+  uberClientId: string | null;
+  uberClientSecret: string | null;
+  uberCustomerId: string | null;
+}): UberCreds {
+  if (!config.uberClientId || !config.uberClientSecret || !config.uberCustomerId) {
+    throw new UberNotConfiguredError(config.shop);
+  }
+  return {
+    clientId: config.uberClientId,
+    clientSecret: decrypt(config.uberClientSecret),
+    customerId: config.uberCustomerId,
+  };
+}
+
+/** Carga las credenciales de Uber de una tienda desde la DB. */
+export async function getStoreUberCreds(shop: string): Promise<UberCreds> {
+  const config = await db.storeConfig.findUnique({ where: { shop } });
+  if (!config) throw new UberNotConfiguredError(shop);
+  return uberCredsFromConfig({ ...config, shop });
+}
+
+// ─── Auth ────────────────────────────────────────────────────────────────────
+// Tokens duran 30 días (2,592,000 seg). Se cachean en memoria (L1) y en DB (L2),
+// con clave = clientId de la tienda. Uber rate-limita la generación de tokens a
+// 100 req/hora — por eso persistimos en DB: en serverless/multi-instancia el
+// cache en memoria no alcanza.
+
+const cachedTokens = new Map<string, { value: string; expiresAt: number }>();
+
+async function getAccessToken(creds: UberCreds): Promise<string> {
+  // L1 — cache en memoria del proceso
+  const cached = cachedTokens.get(creds.clientId);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.value;
   }
 
   // L2 — token persistido en DB (sobrevive reinicios y otras instancias)
-  const stored = await db.uberToken.findUnique({ where: { clientId } });
+  const stored = await db.uberToken.findUnique({ where: { clientId: creds.clientId } });
   if (stored && Date.now() < stored.expiresAt.getTime() - 300_000) {
-    cachedToken = { value: stored.token, expiresAt: stored.expiresAt.getTime() - 300_000 };
+    cachedTokens.set(creds.clientId, {
+      value: stored.token,
+      expiresAt: stored.expiresAt.getTime() - 300_000,
+    });
     return stored.token;
   }
 
   const params = new URLSearchParams({
-    client_id: clientId,
-    client_secret: clientSecret,
+    client_id: creds.clientId,
+    client_secret: creds.clientSecret,
     grant_type: "client_credentials",
     scope: "eats.deliveries",
   });
@@ -81,22 +126,33 @@ async function getAccessToken(): Promise<string> {
 
   // Persistir en DB y cachear en memoria (renovamos 5 min antes de expirar)
   await db.uberToken.upsert({
-    where: { clientId },
-    create: { clientId, token: data.access_token, expiresAt },
+    where: { clientId: creds.clientId },
+    create: { clientId: creds.clientId, token: data.access_token, expiresAt },
     update: { token: data.access_token, expiresAt },
   });
-  cachedToken = { value: data.access_token, expiresAt: expiresAt.getTime() - 300_000 };
+  cachedTokens.set(creds.clientId, {
+    value: data.access_token,
+    expiresAt: expiresAt.getTime() - 300_000,
+  });
 
-  return cachedToken.value;
+  return data.access_token;
 }
 
 /** Fuerza renovación del token (útil si recibes un 401 inesperado) */
-export async function invalidateToken(): Promise<void> {
-  cachedToken = null;
-  const clientId = process.env.UBER_CLIENT_ID;
-  if (clientId) {
-    await db.uberToken.deleteMany({ where: { clientId } });
-  }
+export async function invalidateToken(creds: UberCreds): Promise<void> {
+  cachedTokens.delete(creds.clientId);
+  await db.uberToken.deleteMany({ where: { clientId: creds.clientId } });
+}
+
+/**
+ * Valida que las credenciales sirvan: pide un token a Uber. Lanza UberApiError
+ * si el client_id/secret son inválidos. Se usa en "Probar conexión" de Settings.
+ */
+export async function testUberConnection(creds: UberCreds): Promise<void> {
+  // Saltar el cache para validar de verdad contra Uber.
+  cachedTokens.delete(creds.clientId);
+  await db.uberToken.deleteMany({ where: { clientId: creds.clientId } });
+  await getAccessToken(creds);
 }
 
 // ─── Error personalizado ────────────────────────────────────────────────────
@@ -126,19 +182,13 @@ export class UberApiError extends Error {
 
 // ─── Helpers internos ───────────────────────────────────────────────────────
 
-function getCustomerId(): string {
-  const id = process.env.UBER_CUSTOMER_ID;
-  if (!id) throw new Error("Falta UBER_CUSTOMER_ID en las variables de entorno");
-  return id;
-}
-
 async function uberFetch<T>(
+  creds: UberCreds,
   path: string,
   options: { method?: string; body?: unknown } = {}
 ): Promise<T> {
-  const token = await getAccessToken();
-  const customerId = getCustomerId();
-  const url = `${UBER_API_BASE}/customers/${customerId}${path}`;
+  const token = await getAccessToken(creds);
+  const url = `${UBER_API_BASE}/customers/${creds.customerId}${path}`;
 
   const res = await fetch(url, {
     method: options.method ?? "GET",
@@ -215,7 +265,7 @@ export type QuoteResult = {
   created: string;                // ISO datetime de creación
 };
 
-export async function getDeliveryQuote(req: QuoteRequest): Promise<QuoteResult> {
+export async function getDeliveryQuote(creds: UberCreds, req: QuoteRequest): Promise<QuoteResult> {
   const body: Record<string, unknown> = {
     pickup_address: formatAddress(req.pickupAddress),
     dropoff_address: formatAddress(req.dropoffAddress),
@@ -231,7 +281,7 @@ export async function getDeliveryQuote(req: QuoteRequest): Promise<QuoteResult> 
     body.dropoff_longitude = req.dropoffLatLng.longitude;
   }
 
-  const data = await uberFetch<Record<string, unknown>>("/delivery_quotes", {
+  const data = await uberFetch<Record<string, unknown>>(creds, "/delivery_quotes", {
     method: "POST",
     body,
   });
@@ -312,6 +362,7 @@ export type DeliveryResult = {
 };
 
 export async function createDelivery(
+  creds: UberCreds,
   req: CreateDeliveryRequest
 ): Promise<DeliveryResult> {
   const body: Record<string, unknown> = {
@@ -359,7 +410,7 @@ export async function createDelivery(
     };
   }
 
-  const data = await uberFetch<Record<string, unknown>>("/deliveries", {
+  const data = await uberFetch<Record<string, unknown>>(creds, "/deliveries", {
     method: "POST",
     body,
   });
@@ -370,8 +421,9 @@ export async function createDelivery(
 // ─── GET DELIVERY ───────────────────────────────────────────────────────────
 // GET /v1/customers/{customer_id}/deliveries/{delivery_id}
 
-export async function getDelivery(deliveryId: string): Promise<DeliveryResult> {
+export async function getDelivery(creds: UberCreds, deliveryId: string): Promise<DeliveryResult> {
   const data = await uberFetch<Record<string, unknown>>(
+    creds,
     `/deliveries/${deliveryId}`
   );
   return mapDeliveryResponse(data);
@@ -380,16 +432,17 @@ export async function getDelivery(deliveryId: string): Promise<DeliveryResult> {
 // ─── LIST DELIVERIES ────────────────────────────────────────────────────────
 // GET /v1/customers/{customer_id}/deliveries
 
-export async function listDeliveries(): Promise<DeliveryResult[]> {
-  const data = await uberFetch<Record<string, unknown>[]>("/deliveries");
+export async function listDeliveries(creds: UberCreds): Promise<DeliveryResult[]> {
+  const data = await uberFetch<Record<string, unknown>[]>(creds, "/deliveries");
   return (data ?? []).map(mapDeliveryResponse);
 }
 
 // ─── CANCEL DELIVERY ────────────────────────────────────────────────────────
 // POST /v1/customers/{customer_id}/deliveries/{delivery_id}/cancel
 
-export async function cancelDelivery(deliveryId: string): Promise<DeliveryResult> {
+export async function cancelDelivery(creds: UberCreds, deliveryId: string): Promise<DeliveryResult> {
   const data = await uberFetch<Record<string, unknown>>(
+    creds,
     `/deliveries/${deliveryId}/cancel`,
     { method: "POST", body: {} }
   );
@@ -406,11 +459,13 @@ export async function cancelDelivery(deliveryId: string): Promise<DeliveryResult
 export type ProofType = "picture" | "signature" | "pincode";
 
 export async function getProofOfDelivery(
+  creds: UberCreds,
   deliveryId: string,
   type: ProofType = "picture",
   waypoint: "pickup" | "dropoff" = "dropoff"
 ): Promise<string | null> {
   const data = await uberFetch<{ document?: string }>(
+    creds,
     `/deliveries/${deliveryId}/proof-of-delivery`,
     { method: "POST", body: { waypoint, type } }
   );
@@ -437,8 +492,8 @@ export type UberWebhookEvent = {
   created: string;
 };
 
-export async function registerUberWebhook(callbackUrl: string): Promise<void> {
-  await uberFetch("/webhooks", {
+export async function registerUberWebhook(creds: UberCreds, callbackUrl: string): Promise<void> {
+  await uberFetch(creds, "/webhooks", {
     method: "POST",
     body: {
       url: callbackUrl,
@@ -447,25 +502,29 @@ export async function registerUberWebhook(callbackUrl: string): Promise<void> {
   });
 }
 
-export async function listUberWebhooks(): Promise<{ id: string; url: string }[]> {
-  const data = await uberFetch<{ data: { id: string; url: string }[] }>("/webhooks");
+export async function listUberWebhooks(creds: UberCreds): Promise<{ id: string; url: string }[]> {
+  const data = await uberFetch<{ data: { id: string; url: string }[] }>(creds, "/webhooks");
   return data?.data ?? [];
 }
 
-export async function deleteUberWebhook(webhookId: string): Promise<void> {
-  await uberFetch(`/webhooks/${webhookId}`, { method: "DELETE" });
+export async function deleteUberWebhook(creds: UberCreds, webhookId: string): Promise<void> {
+  await uberFetch(creds, `/webhooks/${webhookId}`, { method: "DELETE" });
 }
 
-/** Verifica la firma HMAC-SHA256 de Uber. Retorna true si es válida. */
+/**
+ * Verifica la firma HMAC-SHA256 de Uber con el client_secret de la tienda.
+ * Retorna true si es válida. El webhook llega sin identificar la tienda, así que
+ * el caller resuelve primero qué tienda es (por customer_id) y pasa su secret.
+ */
 export async function verifyUberSignature(
+  clientSecret: string,
   rawBody: string,
   signature: string | null
 ): Promise<boolean> {
-  const secret = process.env.UBER_CLIENT_SECRET;
-  if (!secret || !signature) return false;
+  if (!clientSecret || !signature) return false;
   const key = await crypto.subtle.importKey(
     "raw",
-    new TextEncoder().encode(secret),
+    new TextEncoder().encode(clientSecret),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"]

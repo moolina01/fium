@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs } from "react-router";
 import db from "../db.server";
-import { getDeliveryQuote, UberApiError } from "../services/uber-direct.server";
+import { getDeliveryQuote, uberCredsFromConfig, UberApiError, UberNotConfiguredError } from "../services/uber-direct.server";
 import type { QuoteResult } from "../services/uber-direct.server";
 import { checkPlanLimit } from "../lib/plan-limits.server";
 import { logError, logInfo, logDebug } from "../lib/logger.server";
@@ -95,6 +95,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const storeConfig = await db.storeConfig.findUnique({ where: { shop } });
   if (!storeConfig) return Response.json({ rates: [] });
 
+  // Credenciales de Uber de esta tienda. Si aún no conectó su cuenta, no cotizamos
+  // (Fium no aparece en el checkout hasta que pegue sus credenciales en Settings).
+  let creds;
+  try {
+    creds = uberCredsFromConfig(storeConfig);
+  } catch (e) {
+    if (e instanceof UberNotConfiguredError) {
+      logInfo("carrier/rates", "tienda sin credenciales de Uber — sin tarifa", { shop });
+      return Response.json({ rates: [] });
+    }
+    throw e;
+  }
+
   // Señal de activación: si Shopify nos pide tarifas, el carrier está realmente
   // conectado al checkout (agregado a la zona de envío). Guardamos la última vez,
   // con throttle de 10 min para no escribir en cada llamada del checkout.
@@ -121,7 +134,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // Usar cache si existe — respuesta inmediata
     const quotePromise = cached
       ? Promise.resolve(cached)
-      : getDeliveryQuote({
+      : getDeliveryQuote(creds, {
       pickupAddress: {
         streetAddress: [storeConfig.address],
         city: storeConfig.comuna,

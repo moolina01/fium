@@ -3,11 +3,13 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 // TEMP(promt02): se quitó `Link` del import porque su único uso era el link
 // "Cambiar plan →" de la sección "Plan" (ahora oculta). Al revertir, re-agregar `Link`.
 import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
-import { authenticate, registerCarrierService } from "../shopify.server";
+import { authenticate, registerCarrierService, ensureUberWebhookForShop } from "../shopify.server";
 import db from "../db.server";
 import { REGIONES, REGIONES_COMUNAS } from "../data/chile";
 import { isCarrierRegistered } from "../lib/setup.server";
 import { PACKAGE_SIZES, toPackageSize } from "../lib/package-size";
+import { testUberConnection } from "../services/uber-direct.server";
+import { encrypt, decrypt } from "../lib/crypto.server";
 import { FONT } from "../lib/theme";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -16,11 +18,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     db.storeConfig.findUnique({ where: { shop: session.shop } }),
     isCarrierRegistered(session.shop, session.accessToken!),
   ]);
+  const uberConnected = !!(config?.uberClientId && config?.uberClientSecret && config?.uberCustomerId);
   return {
-    config,
+    // Nunca enviar el secret (ni cifrado) al navegador.
+    config: config ? { ...config, uberClientSecret: null } : config,
     plan: config?.plan ?? "none",
     planStatus: config?.planStatus ?? "pending",
     carrierRegistered,
+    uberConnected,
     // Última vez que Shopify pidió tarifas a Fium en el checkout (ISO o null).
     carrierLiveAt: config?.lastRateRequestAt?.toISOString() ?? null,
   };
@@ -47,6 +52,48 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (missing.length > 0) return { error: "Completa todos los campos.", intent };
     await db.storeConfig.upsert({ where: { shop: session.shop }, update: data, create: data });
     return { success: "Dirección actualizada correctamente.", intent };
+  }
+
+  if (intent === "uber_credentials") {
+    const uberClientId = ((formData.get("uberClientId") as string) || "").trim();
+    const uberCustomerId = ((formData.get("uberCustomerId") as string) || "").trim();
+    const rawSecret = ((formData.get("uberClientSecret") as string) || "").trim();
+
+    if (!uberClientId || !uberCustomerId) {
+      return { error: "Completa el Client ID y el Customer ID.", intent };
+    }
+
+    const existing = await db.storeConfig.findUnique({ where: { shop: session.shop } });
+    if (!existing) {
+      return { error: "Primero guarda tu punto de despacho.", intent };
+    }
+
+    // Si el campo del secret va vacío, conservamos el ya guardado (permite editar
+    // Client ID / Customer ID sin volver a pegar el secret).
+    let secretPlain = rawSecret;
+    if (!secretPlain) {
+      if (!existing.uberClientSecret) {
+        return { error: "Ingresa el Client Secret de Uber Direct.", intent };
+      }
+      secretPlain = decrypt(existing.uberClientSecret);
+    }
+
+    // Validar contra Uber antes de guardar nada.
+    try {
+      await testUberConnection({ clientId: uberClientId, clientSecret: secretPlain, customerId: uberCustomerId });
+    } catch {
+      return { error: "No se pudo conectar con Uber. Revisa el Client ID y el Client Secret.", intent };
+    }
+
+    await db.storeConfig.update({
+      where: { shop: session.shop },
+      data: { uberClientId, uberClientSecret: encrypt(secretPlain), uberCustomerId },
+    });
+
+    // Registrar el webhook de Uber para esta tienda (no bloquea si falla).
+    await ensureUberWebhookForShop(session.shop);
+
+    return { success: "Cuenta de Uber Direct conectada correctamente.", intent };
   }
 
   if (intent === "dispatch") {
@@ -82,7 +129,7 @@ export default function Settings() {
   // TEMP(promt02): plan/planStatus/planLabels solo alimentaban la sección "Plan",
   // que ahora está oculta para los clientes de prueba sin cobro.
   // Revertir cuando se cobre: restaurar la destructuración y planLabels comentados.
-  const { config, carrierRegistered, carrierLiveAt } = useLoaderData<typeof loader>();
+  const { config, carrierRegistered, carrierLiveAt, uberConnected } = useLoaderData<typeof loader>();
   // const { config, plan, planStatus, carrierRegistered } = useLoaderData<typeof loader>();
   // const planLabels: Record<string, string> = { starter: "Starter", growth: "Growth", pro: "Pro", none: "Sin plan" };
   const actionData = useActionData<typeof action>();
@@ -127,6 +174,80 @@ export default function Settings() {
           </div>
         </Section>
         */}
+
+        {/* 1.5 Conexión con Uber Direct — credenciales propias de la tienda.
+            Sin esto, Fium no puede cotizar ni despachar. */}
+        <div style={{
+          background: "white",
+          borderRadius: "10px",
+          border: uberConnected ? "1px solid #e5e7eb" : "2px solid #4B2BE0",
+          overflow: "hidden",
+          marginBottom: "12px",
+          ...F,
+        }}>
+          <div style={{
+            padding: "16px 20px",
+            borderBottom: "1px solid #f3f4f6",
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+          }}>
+            <div>
+              <div style={{ fontSize: "14px", fontWeight: "600", color: "#111827" }}>
+                Conexión con Uber Direct
+              </div>
+              <div style={{ fontSize: "12px", color: "#9ca3af", marginTop: "1px" }}>
+                Credenciales de la cuenta de Uber Direct de tu tienda
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <span style={{
+                width: "7px", height: "7px", borderRadius: "50%",
+                background: uberConnected ? "#1D9E75" : "#DC2626", display: "inline-block",
+              }} />
+              <span style={{ fontSize: "12px", color: uberConnected ? "#1D9E75" : "#DC2626", fontWeight: "600" }}>
+                {uberConnected ? "Conectado" : "Sin conectar"}
+              </span>
+            </div>
+          </div>
+          <div style={{ padding: "20px" }}>
+            {actionData?.intent === "uber_credentials" && actionData.error && <Alert type="error">{actionData.error}</Alert>}
+            {actionData?.intent === "uber_credentials" && actionData.success && <Alert type="success">{actionData.success}</Alert>}
+
+            <div style={{
+              background: "#fafafe", border: "1px solid #E4E2F0", borderRadius: "8px",
+              padding: "10px 14px", marginBottom: "16px", fontSize: "12px", color: "#6b7280", lineHeight: "1.6",
+            }}>
+              Estas credenciales vienen del dashboard de <strong>Uber Direct</strong> (direct.uber.com),
+              en <strong>Developer → Credentials</strong>. Tu cuenta debe tener una tarjeta cargada: Uber
+              cobra cada envío directamente a tu cuenta.
+            </div>
+
+            <Form method="post">
+              <input type="hidden" name="intent" value="uber_credentials" />
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                <Field label="Client ID">
+                  <input name="uberClientId" defaultValue={config?.uberClientId ?? ""} placeholder="kSoRrEVQ..." required style={inp} />
+                </Field>
+                <Field label="Customer ID">
+                  <input name="uberCustomerId" defaultValue={config?.uberCustomerId ?? ""} placeholder="UUID de la organización" required style={inp} />
+                </Field>
+                <Field label="Client Secret" fullWidth>
+                  <input
+                    name="uberClientSecret"
+                    type="password"
+                    autoComplete="off"
+                    placeholder={uberConnected ? "•••••••• (déjalo vacío para no cambiarlo)" : "Pega tu Client Secret"}
+                    style={inp}
+                  />
+                </Field>
+              </div>
+              <div style={{ marginTop: "20px", display: "flex", justifyContent: "flex-end" }}>
+                <Btn type="submit" disabled={saving}>
+                  {saving ? "Probando conexión..." : uberConnected ? "Probar y actualizar" : "Probar y conectar"}
+                </Btn>
+              </div>
+            </Form>
+          </div>
+        </div>
 
         {/* 2. Carrier service — prominente hasta que esté realmente activo en el checkout */}
         <div style={{

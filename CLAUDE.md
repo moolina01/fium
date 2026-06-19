@@ -87,6 +87,9 @@ Set by the Shopify CLI during `dev`. For production you need:
 - `SHOPIFY_API_KEY`, `SHOPIFY_API_SECRET`, `SHOPIFY_APP_URL`, `SCOPES`
 - `DATABASE_URL` if switching from SQLite to Postgres/MySQL
 - `NODE_ENV=production`
+- `ENCRYPTION_KEY` — 32 bytes en hex (64 chars). Cifra el `client_secret` de Uber Direct de cada tienda en la DB (AES-256-GCM, `app/lib/crypto.server.ts`). Genérala con `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`. **No la pierdas ni la cambies** o las credenciales guardadas dejan de poder descifrarse.
+
+> Uber Direct ya **no usa credenciales globales** (`UBER_CLIENT_ID/SECRET/CUSTOMER_ID`). Cada tienda conecta su propia cuenta desde **Configuración → Conexión con Uber Direct**; las credenciales se guardan por tienda en `StoreConfig`.
 
 ### Shopify Dev MCP
 

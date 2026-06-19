@@ -4,7 +4,7 @@ import { Form, Link, useActionData, useLoaderData, useNavigation } from "react-r
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
-import { getDeliveryQuote, createDelivery } from "../services/uber-direct.server";
+import { getDeliveryQuote, createDelivery, uberCredsFromConfig } from "../services/uber-direct.server";
 import { checkPlanLimit } from "../lib/plan-limits.server";
 import { PACKAGE_SIZES, toPackageSize } from "../lib/package-size";
 import { normalizeChileanPhone } from "../lib/phone";
@@ -62,7 +62,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
   if (order.shippingAddress) {
     try {
-      quote = await getDeliveryQuote({
+      const creds = uberCredsFromConfig(storeConfig);
+      quote = await getDeliveryQuote(creds, {
         pickupAddress: { streetAddress: [storeConfig.address], city: storeConfig.comuna, state: storeConfig.region, zipCode: storeConfig.zipCode },
         dropoffAddress: { streetAddress: [order.shippingAddress.address1], city: order.shippingAddress.city, state: order.shippingAddress.province ?? order.shippingAddress.city, zipCode: order.shippingAddress.zip },
       });
@@ -103,6 +104,13 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     return { error: "No se pudo procesar la orden." };
   }
 
+  let creds;
+  try {
+    creds = uberCredsFromConfig(storeConfig);
+  } catch {
+    return { error: "Conecta tu cuenta de Uber Direct en Configuración antes de despachar." };
+  }
+
   const { allowed, used, limit } = await checkPlanLimit(session.shop);
   if (!allowed) {
     return {
@@ -133,7 +141,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   let activeQuoteId = quoteId;
   let delivery;
   try {
-    delivery = await createDelivery({
+    delivery = await createDelivery(creds, {
       quoteId: activeQuoteId,
       pickupName: storeConfig.contactName, pickupAddress, pickupPhone: storeConfig.phone, pickupNotes,
       dropoffName: order.shippingAddress.name, dropoffAddress, dropoffPhone, dropoffNotes, manifestItems,
@@ -143,8 +151,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     // Si el quote expiró, obtener uno nuevo y reintentar una vez
     if (msg.toLowerCase().includes("expired") || msg.includes("quote") || msg.includes("422") || msg.includes("invalid")) {
       try {
-        const freshQuote = await getDeliveryQuote({ pickupAddress, dropoffAddress });
-        delivery = await createDelivery({
+        const freshQuote = await getDeliveryQuote(creds, { pickupAddress, dropoffAddress });
+        delivery = await createDelivery(creds, {
           quoteId: freshQuote.id,
           pickupName: storeConfig.contactName, pickupAddress, pickupPhone: storeConfig.phone, pickupNotes,
           dropoffName: order.shippingAddress.name, dropoffAddress, dropoffPhone, dropoffNotes, manifestItems,

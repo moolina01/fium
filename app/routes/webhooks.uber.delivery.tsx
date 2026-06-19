@@ -2,6 +2,7 @@ import type { ActionFunctionArgs } from "react-router";
 import db from "../db.server";
 import { unauthenticated } from "../shopify.server";
 import { verifyUberSignature, type UberWebhookEvent } from "../services/uber-direct.server";
+import { decrypt } from "../lib/crypto.server";
 import { logError, logDebug } from "../lib/logger.server";
 import { addFulfillmentEvent, type FulfillmentEventStatus } from "../lib/fulfillment.server";
 
@@ -21,17 +22,32 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const rawBody = await request.text();
   const signature = request.headers.get("X-Postmates-Signature");
 
-  const valid = await verifyUberSignature(rawBody, signature);
-  if (!valid) {
-    logError("uber-webhook", "firma inválida — rechazado");
-    return new Response(null, { status: 401 });
-  }
-
+  // El webhook no identifica la tienda por sí mismo. Lo resolvemos por el
+  // customer_id del payload (cada tienda tiene el suyo) y verificamos la firma
+  // con el client_secret de ESA tienda.
   let event: UberWebhookEvent;
   try {
     event = JSON.parse(rawBody);
   } catch {
     return new Response(null, { status: 400 });
+  }
+
+  const customerId = event.customer_id;
+  if (!customerId) {
+    logError("uber-webhook", "payload sin customer_id — rechazado");
+    return new Response(null, { status: 401 });
+  }
+
+  const store = await db.storeConfig.findFirst({ where: { uberCustomerId: customerId } });
+  if (!store?.uberClientSecret) {
+    logError("uber-webhook", "no hay tienda con ese customer_id", { customerId });
+    return new Response(null, { status: 401 });
+  }
+
+  const valid = await verifyUberSignature(decrypt(store.uberClientSecret), rawBody, signature);
+  if (!valid) {
+    logError("uber-webhook", "firma inválida — rechazado", { shop: store.shop });
+    return new Response(null, { status: 401 });
   }
 
   logDebug("uber-webhook", "evento recibido", { type: event.event_type, delivery: event.data?.id });

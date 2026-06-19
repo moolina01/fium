@@ -1,7 +1,7 @@
 import type { LoaderFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
-import { getProofOfDelivery, type ProofType } from "../services/uber-direct.server";
+import { getProofOfDelivery, getStoreUberCreds, type ProofType } from "../services/uber-direct.server";
 import { logError } from "../lib/logger.server";
 
 /**
@@ -23,10 +23,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     return Response.json({ error: "La prueba de entrega está disponible solo para envíos entregados." }, { status: 400 });
   }
 
+  const creds = await getStoreUberCreds(session.shop);
+
   // Probar foto primero, luego firma — el courier captura uno u otro.
   for (const type of ["picture", "signature"] as ProofType[]) {
     try {
-      const document = await getProofOfDelivery(delivery.uberDeliveryId, type);
+      const document = await getProofOfDelivery(creds, delivery.uberDeliveryId, type);
       if (document) {
         // Detectar el mime por el prefijo del base64 (PNG vs JPEG)
         const mime = document.startsWith("iVBOR") ? "image/png" : "image/jpeg";

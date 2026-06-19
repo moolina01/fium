@@ -708,6 +708,7 @@ function DoneStep() {
   // Revertir cuando se cobre: volver a agregar { done: false, label: "Elige tu plan" }.
   const items = [
     { done: true,  label: "Dirección de retiro guardada" },
+    { done: false, label: "Conecta tu cuenta de Uber Direct" },
     { done: false, label: "Activa Fium en el checkout de Shopify" },
     { done: false, label: "Exige teléfono en el checkout" },
   ];

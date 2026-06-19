@@ -6,7 +6,7 @@ import {
 } from "@shopify/shopify-app-react-router/server";
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import prisma from "./db.server";
-import { listUberWebhooks, deleteUberWebhook, registerUberWebhook } from "./services/uber-direct.server";
+import { listUberWebhooks, deleteUberWebhook, registerUberWebhook, getStoreUberCreds } from "./services/uber-direct.server";
 import { logError } from "./lib/logger.server";
 
 const shopify = shopifyApp({
@@ -24,10 +24,9 @@ const shopify = shopifyApp({
   hooks: {
     afterAuth: async ({ session }) => {
       console.log("[afterAuth] disparado para shop:", session.shop);
-      await Promise.all([
-        registerCarrierService(session.shop, session.accessToken!),
-        ensureUberWebhook(),
-      ]);
+      // El webhook de Uber se registra por tienda cuando conecta su cuenta
+      // (al guardar credenciales en Settings), no aquí — aquí aún no las tiene.
+      await registerCarrierService(session.shop, session.accessToken!);
     },
   },
   ...(process.env.SHOP_CUSTOM_DOMAIN
@@ -35,23 +34,29 @@ const shopify = shopifyApp({
     : {}),
 });
 
-export async function ensureUberWebhook(): Promise<void> {
+/**
+ * Registra el webhook de Uber Direct en la cuenta de UNA tienda. Se llama cuando
+ * la tienda conecta/actualiza sus credenciales en Settings. El callback es el
+ * mismo para todas las tiendas; cada evento se identifica por su customer_id.
+ */
+export async function ensureUberWebhookForShop(shop: string): Promise<void> {
   const appUrl = process.env.SHOPIFY_APP_URL;
   if (!appUrl) return;
   try {
+    const creds = await getStoreUberCreds(shop);
     const callbackUrl = `${appUrl}/webhooks/uber/delivery`;
-    const existing = await listUberWebhooks();
+    const existing = await listUberWebhooks(creds);
     for (const wh of existing) {
-      if (wh.url !== callbackUrl) await deleteUberWebhook(wh.id);
+      if (wh.url !== callbackUrl) await deleteUberWebhook(creds, wh.id);
     }
     if (!existing.some((w) => w.url === callbackUrl)) {
-      await registerUberWebhook(callbackUrl);
-      console.log("[uber-webhook] registrado:", callbackUrl);
+      await registerUberWebhook(creds, callbackUrl);
+      console.log("[uber-webhook] registrado para", shop, callbackUrl);
     } else {
-      console.log("[uber-webhook] ya existe:", callbackUrl);
+      console.log("[uber-webhook] ya existe para", shop);
     }
   } catch (e) {
-    logError("shopify/ensure-uber-webhook", e);
+    logError("shopify/ensure-uber-webhook", e, { shop });
   }
 }
 

@@ -5,7 +5,7 @@ import { authenticate, registerCarrierService } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import db from "../db.server";
 import { checkPlanLimit } from "../lib/plan-limits.server";
-import { getDelivery, cancelDelivery } from "../services/uber-direct.server";
+import { getDelivery, cancelDelivery, getStoreUberCreds, type UberCreds } from "../services/uber-direct.server";
 import { getSetupChecklist, type SetupChecklist } from "../lib/setup.server";
 import { logError } from "../lib/logger.server";
 import { FONT } from "../lib/theme";
@@ -94,7 +94,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // "obsoletos" (sin actualizar en >5 min) y como mucho 15, para que el loader
   // no haga decenas de llamadas a Uber en cada carga.
   const STALE_MS = 5 * 60 * 1000;
-  const nonTerminal = deliveries
+  // Credenciales de Uber de la tienda — si aún no conectó su cuenta, no sincronizamos.
+  let uberCreds: UberCreds | null = null;
+  try {
+    uberCreds = await getStoreUberCreds(session.shop);
+  } catch {
+    uberCreds = null;
+  }
+  const nonTerminal = (uberCreds ? deliveries : [])
     .filter(
       (d: any) =>
         !["delivered", "canceled", "returned"].includes(d.status) &&
@@ -105,7 +112,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   await Promise.allSettled(
     nonTerminal.map(async (d: any) => {
       try {
-        const live = await getDelivery(d.uberDeliveryId);
+        const live = await getDelivery(uberCreds!, d.uberDeliveryId);
         if (live.status !== d.status) {
           await db.delivery.update({
             where: { id: d.id },
@@ -238,7 +245,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const delivery = await db.delivery.findFirst({ where: { id: deliveryId, shop: session.shop } });
     if (!delivery?.uberDeliveryId) return { error: "Envío no encontrado." };
     try {
-      await cancelDelivery(delivery.uberDeliveryId);
+      const creds = await getStoreUberCreds(session.shop);
+      await cancelDelivery(creds, delivery.uberDeliveryId);
       await db.delivery.update({ where: { id: deliveryId }, data: { status: "canceled" } });
       return { ok: true };
     } catch (e) {
