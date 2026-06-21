@@ -89,7 +89,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // (Uber no puede ejecutar el envío sin teléfono).
   const storePhone = storeConfig.phone;
 
-  return { order, storeConfig, quote, quoteError, orderId, formattedTotal, formattedFee, customerPhone, missingPhone, storePhone };
+  // Link al pedido completo en el admin de Shopify (ahí están las fotos y el
+  // desglose de lo que pagó el cliente). Usa el dominio .myshopify.com → siempre válido.
+  const adminOrderUrl = `https://${session.shop}/admin/orders/${orderId}`;
+
+  return { order, storeConfig, quote, quoteError, orderId, formattedTotal, formattedFee, customerPhone, missingPhone, storePhone, adminOrderUrl };
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
@@ -194,11 +198,13 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function OrderDetail() {
-  const { order, storeConfig, quote, quoteError, formattedTotal, formattedFee, customerPhone, storePhone } = useLoaderData<typeof loader>();
+  const { order, storeConfig, quote, quoteError, formattedTotal, formattedFee, customerPhone, storePhone, adminOrderUrl } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const confirming = navigation.state === "submitting";
   const font = { fontFamily: FONT };
+  // Modal de confirmación antes de despachar (evita envíos accidentales).
+  const [showConfirm, setShowConfirm] = useState(false);
   // Si la orden no trae teléfono del cliente, pre-llenamos con el de la tienda
   // (Uber lo necesita sí o sí). El merchant puede cambiarlo antes de despachar.
   const [manualPhone, setManualPhone] = useState(customerPhone ? "" : (storePhone ?? ""));
@@ -290,7 +296,7 @@ export default function OrderDetail() {
 
         {/* Productos */}
         <div style={{ background: F.surface, borderRadius: "12px", border: `1px solid ${F.border}`, overflow: "hidden" }}>
-          <div style={{ padding: "14px 18px", borderBottom: `1px solid ${F.border}`, background: F.bg, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ padding: "14px 18px", borderBottom: `1px solid ${F.border}`, background: F.bg, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
             <div>
               <span style={{ fontSize: "12px", fontWeight: "700", color: F.muted, textTransform: "uppercase", letterSpacing: "0.5px" }}>
                 📦 Preparar para envío
@@ -298,8 +304,20 @@ export default function OrderDetail() {
               <div style={{ fontSize: "12px", color: F.muted, marginTop: "2px" }}>
                 Esto es lo que el cliente compró
               </div>
+              <a
+                href={adminOrderUrl}
+                target="_blank"
+                rel="noreferrer"
+                style={{ display: "inline-block", marginTop: "6px", fontSize: "12px", color: F.brand, fontWeight: 600, textDecoration: "none" }}
+              >
+                Ver pedido completo en Shopify (fotos y detalle) ↗
+              </a>
             </div>
-            <span style={{ fontSize: "15px", fontWeight: "700", color: F.ink }}>{formattedTotal}</span>
+            {/* Etiqueta clara: esto es lo que pagó el cliente, NO el costo del envío */}
+            <div style={{ textAlign: "right", flexShrink: 0 }}>
+              <div style={{ fontSize: "11px", color: F.muted, whiteSpace: "nowrap" }}>Pagó el cliente</div>
+              <div style={{ fontSize: "15px", fontWeight: "700", color: F.ink }}>{formattedTotal}</div>
+            </div>
           </div>
           <div style={{ padding: "14px 18px", display: "flex", flexDirection: "column", gap: "10px" }}>
             {order.lineItems.edges.map(({ node }) => (
@@ -407,6 +425,7 @@ export default function OrderDetail() {
                       <div style={{ background: F.brandTint, borderRadius: "10px", padding: "16px", textAlign: "center" }}>
                         <div style={{ fontSize: "11px", fontWeight: "700", color: F.brand, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "6px" }}>Costo del envío</div>
                         <div style={{ fontSize: "28px", fontWeight: "700", color: F.ink, fontFamily: DISPLAY_FONT }}>{formattedFee}</div>
+                        <div style={{ fontSize: "10px", color: F.muted, marginTop: "4px" }}>Lo pagas tú a Uber</div>
                       </div>
                       <div style={{ background: F.bg, borderRadius: "10px", padding: "16px", textAlign: "center", border: `1px solid ${F.border}` }}>
                         <div style={{ fontSize: "11px", fontWeight: "700", color: F.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "6px" }}>Tiempo estimado</div>
@@ -428,23 +447,79 @@ export default function OrderDetail() {
                   <input type="hidden" name="dropoffNotes" value={notes} />
                   <input type="hidden" name="packageSize" value={packageSize} />
                   <button
-                    type="submit"
-                    disabled={confirming || !effectivePhone}
+                    type="button"
+                    onClick={() => { if (effectivePhone) setShowConfirm(true); }}
+                    disabled={!effectivePhone}
                     style={{
                       width: "100%", padding: "13px",
-                      background: (confirming || !effectivePhone) ? "#9b85ec" : F.brand,
+                      background: !effectivePhone ? "#9b85ec" : F.brand,
                       color: "#fff", border: "none", borderRadius: "8px",
                       fontSize: "15px", fontWeight: "600",
-                      cursor: (confirming || !effectivePhone) ? "not-allowed" : "pointer",
-                      boxShadow: (confirming || !effectivePhone) ? "none" : "0 2px 10px rgba(75,43,224,0.3)",
+                      cursor: !effectivePhone ? "not-allowed" : "pointer",
+                      boxShadow: !effectivePhone ? "none" : "0 2px 10px rgba(75,43,224,0.3)",
                       ...font,
                     }}
                   >
-                    {confirming ? "Creando envío..." : "Confirmar y crear envío →"}
+                    Confirmar y crear envío →
                   </button>
                   {!effectivePhone && (
                     <div style={{ textAlign: "center", fontSize: "12px", color: F.muted, marginTop: "8px" }}>
                       Ingresa el teléfono del cliente arriba para continuar
+                    </div>
+                  )}
+
+                  {/* Modal de confirmación — evita despachos accidentales */}
+                  {showConfirm && (
+                    <div
+                      onClick={() => { if (!confirming) setShowConfirm(false); }}
+                      style={{
+                        position: "fixed", inset: 0, background: "rgba(15,12,40,0.55)",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        padding: "20px", zIndex: 1000,
+                      }}
+                    >
+                      <div
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                          background: F.surface, borderRadius: "14px", padding: "26px 24px",
+                          maxWidth: "380px", width: "100%", textAlign: "center",
+                          boxShadow: "0 20px 60px rgba(15,12,40,0.35)", ...font,
+                        }}
+                      >
+                        <div style={{ fontSize: "40px", marginBottom: "8px" }}>🛵</div>
+                        <h3 style={{ fontSize: "18px", fontWeight: 700, color: F.ink, margin: "0 0 8px", fontFamily: DISPLAY_FONT }}>
+                          ¿Crear el envío ahora?
+                        </h3>
+                        <p style={{ fontSize: "13px", color: F.muted, lineHeight: 1.6, margin: "0 0 20px" }}>
+                          Al confirmar, <strong>Uber Direct asigna un repartidor de inmediato</strong> y comenzará
+                          el retiro en tu tienda. Esta acción no se puede deshacer.
+                        </p>
+                        <div style={{ display: "flex", gap: "10px" }}>
+                          <button
+                            type="button"
+                            onClick={() => setShowConfirm(false)}
+                            disabled={confirming}
+                            style={{
+                              flex: 1, padding: "12px", background: F.surface, color: F.text,
+                              border: `1.5px solid ${F.border}`, borderRadius: "9px",
+                              fontSize: "14px", fontWeight: 600, cursor: confirming ? "not-allowed" : "pointer", ...font,
+                            }}
+                          >
+                            Cancelar
+                          </button>
+                          <button
+                            type="submit"
+                            disabled={confirming}
+                            style={{
+                              flex: 1, padding: "12px", background: confirming ? "#9b85ec" : F.brand,
+                              color: "#fff", border: "none", borderRadius: "9px",
+                              fontSize: "14px", fontWeight: 600, cursor: confirming ? "not-allowed" : "pointer", ...font,
+                            }}
+                          >
+                            {confirming ? "Creando..." : "Sí, crear envío →"}
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </Form>
