@@ -9,6 +9,7 @@ import { checkPlanLimit } from "../lib/plan-limits.server";
 import { PACKAGE_SIZES, toPackageSize } from "../lib/package-size";
 import { normalizeChileanPhone } from "../lib/phone";
 import { fulfillOrderWithTracking } from "../lib/fulfillment.server";
+import { isUberTestShop } from "../lib/test-shops.server";
 import { colors as F, FONT, DISPLAY_FONT } from "../lib/theme";
 
 type ShopifyOrder = {
@@ -137,6 +138,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const pickupAddress = { streetAddress: [storeConfig.address], city: storeConfig.comuna, state: storeConfig.region, zipCode: storeConfig.zipCode };
   const dropoffAddress = { streetAddress: [order.shippingAddress.address1], city: order.shippingAddress.city, state: order.shippingAddress.province ?? order.shippingAddress.city, zipCode: order.shippingAddress.zip };
   const manifestItems = order.lineItems.edges.map((e) => ({ name: e.node.title, quantity: e.node.quantity, size: packageSize }));
+  // Robo-courier de Uber (sandbox) SOLO para la tienda de review de Shopify.
+  const testMode = isUberTestShop(session.shop);
 
   let activeQuoteId = quoteId;
   let delivery;
@@ -155,7 +158,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         delivery = await createDelivery(creds, {
           quoteId: freshQuote.id,
           pickupName: storeConfig.contactName, pickupAddress, pickupPhone: storeConfig.phone, pickupNotes,
-          dropoffName: order.shippingAddress.name, dropoffAddress, dropoffPhone, dropoffNotes, manifestItems,
+          dropoffName: order.shippingAddress.name, dropoffAddress, dropoffPhone, dropoffNotes, manifestItems, testMode,
         });
       } catch (e2) {
         return { error: e2 instanceof Error ? e2.message : "Error al crear el envío en Uber Direct." };

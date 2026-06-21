@@ -7,6 +7,7 @@ import { checkPlanLimit } from "../lib/plan-limits.server";
 import { toPackageSize } from "../lib/package-size";
 import { normalizeChileanPhone } from "../lib/phone";
 import { fulfillOrderWithTracking } from "../lib/fulfillment.server";
+import { isUberTestShop } from "../lib/test-shops.server";
 
 type OrderPayload = {
   id: number;
@@ -140,6 +141,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         quantity: i.quantity,
         size: toPackageSize(config.packageSize),
       })),
+      // Robo-courier de Uber (sandbox) SOLO para la tienda de review de Shopify.
+      testMode: isUberTestShop(shop),
     });
 
     deliveryData = {
