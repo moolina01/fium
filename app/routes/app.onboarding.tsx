@@ -703,9 +703,6 @@ function ReviewScreen({
 
 // ─── Step 3: Done ─────────────────────────────────────────────────────────────
 function DoneStep() {
-  // TEMP(promt02): clientes de prueba sin cobro → ocultamos "Elige tu plan".
-  // El siguiente paso pasa a ser activar Fium en el checkout (desde Configuración).
-  // Revertir cuando se cobre: volver a agregar { done: false, label: "Elige tu plan" }.
   const items = [
     { done: true,  label: "Dirección de retiro guardada" },
     { done: false, label: "Conecta tu cuenta de Uber Direct" },
@@ -766,9 +763,6 @@ function DoneStep() {
         ))}
       </div>
 
-      {/* TEMP(promt02): antes iba a "/app/plans" ("Ir a mi plan").
-          Ahora lleva directo a Configuración para activar Fium en el checkout.
-          Revertir cuando se cobre: volver a to="/app/plans" y "Ir a mi plan →". */}
       <Link
         to="/app/settings"
         style={{

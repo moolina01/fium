@@ -3,7 +3,6 @@ import type { ActionFunctionArgs } from "react-router";
 import db from "../db.server";
 import { getDeliveryQuote, createDelivery, uberCredsFromConfig } from "../services/uber-direct.server";
 import { logError, logInfo } from "../lib/logger.server";
-import { checkPlanLimit } from "../lib/plan-limits.server";
 import { toPackageSize } from "../lib/package-size";
 import { normalizeChileanPhone } from "../lib/phone";
 import { fulfillOrderWithTracking } from "../lib/fulfillment.server";
@@ -50,26 +49,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   });
   if (existing) return new Response("OK", { status: 200 });
 
-  // TEMP(promt02): clientes de prueba sin cobro → el auto-despacho ya no depende
-  // del plan, solo de que la tienda lo tenga activado.
-  // Revertir cuando se cobre: restaurar la condición original comentada.
-  const autoDispatchAllowed = config.autoDispatch;
-  // const autoDispatchAllowed =
-  //   config.autoDispatch && config.planStatus === "active" && config.plan !== "starter";
-
-  if (!autoDispatchAllowed) {
-    // Modo manual: la orden aparece en el dashboard vía Shopify API, sin crear delivery
-    return new Response("OK", { status: 200 });
-  }
-
-  // Respetar el límite mensual del plan — si se alcanzó, no auto-despachar.
-  // La orden queda en "Por despachar" y el merchant decide tras actualizar el plan.
-  const { allowed } = await checkPlanLimit(shop);
-  if (!allowed) {
-    logInfo("orders.paid/limit-reached", "auto-despacho omitido por límite de plan", {
-      shop,
-      orderNumber: order.name,
-    });
+  // Modo manual: la orden aparece en el dashboard vía Shopify API, sin crear delivery
+  if (!config.autoDispatch) {
     return new Response("OK", { status: 200 });
   }
 

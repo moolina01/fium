@@ -57,9 +57,6 @@ model StoreConfig {
   uberClientId     String?
   uberClientSecret String?  // cifrado
   uberCustomerId   String?
-  plan           String   @default("none")    // "none" | "starter" | "growth" | "pro"
-  planStatus     String   @default("pending") // "pending" | "active" | "cancelled" | "expired"
-  subscriptionId String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 }

@@ -5,7 +5,6 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getDeliveryQuote, createDelivery, uberCredsFromConfig } from "../services/uber-direct.server";
-import { checkPlanLimit } from "../lib/plan-limits.server";
 import { PACKAGE_SIZES, toPackageSize } from "../lib/package-size";
 import { normalizeChileanPhone } from "../lib/phone";
 import { fulfillOrderWithTracking } from "../lib/fulfillment.server";
@@ -114,13 +113,6 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     creds = uberCredsFromConfig(storeConfig);
   } catch {
     return { error: "Conecta tu cuenta de Uber Direct en Configuración antes de despachar." };
-  }
-
-  const { allowed, used, limit } = await checkPlanLimit(session.shop);
-  if (!allowed) {
-    return {
-      error: `Alcanzaste el límite de ${limit} envíos del plan ${storeConfig.plan === "starter" ? "Starter" : "actual"}. Actualiza tu plan para continuar.`,
-    };
   }
 
   const formData = await request.formData();

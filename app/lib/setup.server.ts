@@ -25,7 +25,7 @@ export async function isCarrierRegistered(shop: string, accessToken: string): Pr
 }
 
 export type SetupStep = {
-  key: "address" | "plan" | "carrier" | "phone";
+  key: "address" | "carrier" | "phone";
   label: string;
   description: string;
   done: boolean;
@@ -60,14 +60,6 @@ export async function getSetupChecklist(shop: string, accessToken: string): Prom
       description: "Dónde Uber Direct recoge tus pedidos.",
       done: !!config,
     },
-    // TEMP(promt02): clientes de prueba sin cobro → ocultamos el paso "Elige tu plan".
-    // Revertir cuando se cobre: descomentar este step.
-    // {
-    //   key: "plan",
-    //   label: "Elige tu plan",
-    //   description: "Empieza gratis con Starter.",
-    //   done: config?.planStatus === "active",
-    // },
     {
       key: "carrier",
       // El carrier service se registra solo al instalar la app (afterAuth), así que

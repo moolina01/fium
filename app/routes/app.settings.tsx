@@ -1,7 +1,5 @@
 import { useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-// TEMP(promt02): se quitó `Link` del import porque su único uso era el link
-// "Cambiar plan →" de la sección "Plan" (ahora oculta). Al revertir, re-agregar `Link`.
 import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
 import { authenticate, registerCarrierService, ensureUberWebhookForShop } from "../shopify.server";
 import db from "../db.server";
@@ -22,8 +20,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     // Nunca enviar el secret (ni cifrado) al navegador.
     config: config ? { ...config, uberClientSecret: null } : config,
-    plan: config?.plan ?? "none",
-    planStatus: config?.planStatus ?? "pending",
     carrierRegistered,
     uberConnected,
     // Última vez que Shopify pidió tarifas a Fium en el checkout (ISO o null).
@@ -126,12 +122,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 const F = { fontFamily: FONT };
 
 export default function Settings() {
-  // TEMP(promt02): plan/planStatus/planLabels solo alimentaban la sección "Plan",
-  // que ahora está oculta para los clientes de prueba sin cobro.
-  // Revertir cuando se cobre: restaurar la destructuración y planLabels comentados.
   const { config, carrierRegistered, carrierLiveAt, uberConnected } = useLoaderData<typeof loader>();
-  // const { config, plan, planStatus, carrierRegistered } = useLoaderData<typeof loader>();
-  // const planLabels: Record<string, string> = { starter: "Starter", growth: "Growth", pro: "Pro", none: "Sin plan" };
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const saving = navigation.state === "submitting";
@@ -151,31 +142,7 @@ export default function Settings() {
     <s-page heading="Configuración">
       <div style={{ display: "flex", flexDirection: "column", gap: "1px", ...F }}>
 
-        {/* 1. Plan */}
-        {/* TEMP(promt02): sección "Plan" oculta para clientes de prueba sin cobro.
-            Revertir cuando se cobre: descomentar este bloque (y restaurar las
-            variables plan/planStatus/planLabels arriba).
-        <Section title="Plan" description="Tu suscripción activa en Fium">
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <span style={{ fontSize: "15px", fontWeight: "600", color: "#111827" }}>{planLabels[plan]}</span>
-              <span style={{
-                fontSize: "11px", fontWeight: "600",
-                color: planStatus === "active" ? "#1D9E75" : "#92400E",
-                background: planStatus === "active" ? "#E6F7F2" : "#FEF9EC",
-                padding: "2px 8px", borderRadius: "4px",
-              }}>
-                {planStatus === "active" ? "Activo" : "Pendiente"}
-              </span>
-            </div>
-            <Link to="/app/plans" style={{ fontSize: "13px", fontWeight: "600", color: "#4B2BE0", textDecoration: "none" }}>
-              Cambiar plan →
-            </Link>
-          </div>
-        </Section>
-        */}
-
-        {/* 1.5 Conexión con Uber Direct — credenciales propias de la tienda.
+        {/* 1. Conexión con Uber Direct — credenciales propias de la tienda.
             Sin esto, Fium no puede cotizar ni despachar. */}
         <div style={{
           background: "white",

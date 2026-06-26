@@ -2,7 +2,6 @@ import type { ActionFunctionArgs } from "react-router";
 import db from "../db.server";
 import { getDeliveryQuote, uberCredsFromConfig, UberApiError, UberNotConfiguredError } from "../services/uber-direct.server";
 import type { QuoteResult } from "../services/uber-direct.server";
-import { checkPlanLimit } from "../lib/plan-limits.server";
 import { logError, logInfo, logDebug } from "../lib/logger.server";
 
 // Cache en memoria: clave = "shop|zip_destino|address1_destino", TTL = 5 min
@@ -118,13 +117,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     } catch (e) {
       logError("carrier/rates/ping", e, { shop });
     }
-  }
-
-  // No mostrar cotización si se alcanzó el límite del plan
-  const { allowed } = await checkPlanLimit(shop);
-  if (!allowed) {
-    logInfo("carrier/rates", "límite de plan alcanzado — sin tarifa", { shop });
-    return Response.json({ rates: [] });
   }
 
   const cacheKey = `${shop}|${postalCode}|${address1}|${city}`;

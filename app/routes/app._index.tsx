@@ -4,7 +4,6 @@ import { Link, useFetcher, useLoaderData } from "react-router";
 import { authenticate, registerCarrierService } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import db from "../db.server";
-import { checkPlanLimit } from "../lib/plan-limits.server";
 import { getDelivery, cancelDelivery, getStoreUberCreds, type UberCreds } from "../services/uber-direct.server";
 import { getSetupChecklist, type SetupChecklist } from "../lib/setup.server";
 import { logError } from "../lib/logger.server";
@@ -48,9 +47,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const config = await db.storeConfig.findUnique({ where: { shop: session.shop } });
   if (!config) throw redirect("/app/onboarding");
-  // TEMP(promt02): clientes de prueba sin cobro → no forzar selección de plan.
-  // Revertir cuando se cobre: descomentar la línea de abajo.
-  // if (config.planStatus !== "active") throw redirect("/app/plans");
 
   // Estado de setup — si el carrier no está registrado, Fium no aparece en el checkout
   const setup = await getSetupChecklist(session.shop, session.accessToken!);
@@ -189,8 +185,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       timeAgo: calcTimeAgo(d.createdAt.toString()),
     }));
 
-  const { used, limit, plan, allowed } = await checkPlanLimit(session.shop);
-
   return {
     hasConfig: true,
     pendingOrders,
@@ -203,7 +197,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       (d: any) => d.status === "delivered" && new Date(d.createdAt).toDateString() === todayStr
     ).length,
     issues: deliveries.filter((d: any) => d.status === "failed").length,
-    usage: { used, limit, plan, allowed },
     setup,
   };
 };
@@ -264,7 +257,7 @@ const T = { fontFamily: FONT };
 export default function Index() {
   const data = useLoaderData<typeof loader>();
   const [tab, setTab] = useState<"pending" | "confirmed" | "history">("pending");
-  const { pendingOrders, activeDeliveries, history, active, delivered, issues, usage, setup } = data;
+  const { pendingOrders, activeDeliveries, history, active, delivered, issues, setup } = data;
 
   return (
     <s-page heading="Órdenes">
@@ -297,55 +290,6 @@ export default function Index() {
           </div>
         </div>
       </s-section>
-
-      {/* Banner de uso del plan */}
-      {usage.limit !== Infinity && (
-        <s-section>
-          {usage.allowed ? (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", ...T }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
-                  <span style={{ fontSize: "12px", color: "#6b7280" }}>
-                    Envíos este mes · Plan <strong style={{ color: "#111827", textTransform: "capitalize" }}>{usage.plan}</strong>
-                  </span>
-                  <span style={{ fontSize: "12px", fontWeight: "600", color: usage.used >= usage.limit * 0.8 ? "#DC2626" : "#374151" }}>
-                    {usage.used} / {usage.limit}
-                  </span>
-                </div>
-                <div style={{ height: "4px", background: "#f3f4f6", borderRadius: "99px", overflow: "hidden" }}>
-                  <div style={{
-                    height: "100%", borderRadius: "99px",
-                    width: `${Math.min((usage.used / usage.limit) * 100, 100)}%`,
-                    background: usage.used >= usage.limit * 0.8 ? "#DC2626" : "#4B2BE0",
-                    transition: "width 0.3s ease",
-                  }} />
-                </div>
-              </div>
-              <Link to="/app/plans" style={{ fontSize: "12px", color: "#4B2BE0", fontWeight: "600", textDecoration: "none", whiteSpace: "nowrap" }}>
-                Cambiar plan
-              </Link>
-            </div>
-          ) : (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", ...T }}>
-              <div>
-                <div style={{ fontSize: "13px", fontWeight: "600", color: "#DC2626" }}>
-                  Límite de {usage.limit} envíos alcanzado
-                </div>
-                <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "2px" }}>
-                  Las cotizaciones y nuevos envíos están pausados hasta que actualices tu plan.
-                </div>
-              </div>
-              <Link to="/app/plans" style={{
-                padding: "7px 14px", background: "#DC2626", color: "white",
-                borderRadius: "6px", fontSize: "12px", fontWeight: "600",
-                textDecoration: "none", whiteSpace: "nowrap",
-              }}>
-                Actualizar plan
-              </Link>
-            </div>
-          )}
-        </s-section>
-      )}
 
       {/* Métricas */}
       <s-section>
