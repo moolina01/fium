@@ -9,7 +9,13 @@ import { colors as F, FONT, DISPLAY_FONT } from "../lib/theme";
 
 function formatEta(iso: string | null | undefined) {
   if (!iso) return null;
-  return new Date(iso).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" });
+  // Uber devuelve UTC y el server corre en UTC (Railway) — sin timeZone explícito,
+  // toLocaleTimeString usa la del proceso, no la de Chile, y queda desfasado ~4h.
+  return new Date(iso).toLocaleTimeString("es-CL", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "America/Santiago",
+  });
 }
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {

@@ -399,7 +399,7 @@ export default function OrderDetail() {
                     </div>
                     {quote.expires && (
                       <div style={{ fontSize: "12px", color: F.muted, textAlign: "center" }}>
-                        Cotización válida hasta las {new Date(quote.expires).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })} — confirma antes de que expire
+                        Cotización válida hasta las {new Date(quote.expires).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit", timeZone: "America/Santiago" })} — confirma antes de que expire
                       </div>
                     )}
                   </div>
