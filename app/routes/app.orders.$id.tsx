@@ -200,7 +200,6 @@ export default function OrderDetail() {
   // Si la orden no trae teléfono del cliente, pre-llenamos con el de la tienda
   // (Uber lo necesita sí o sí). El merchant puede cambiarlo antes de despachar.
   const [manualPhone, setManualPhone] = useState(customerPhone ? "" : (storePhone ?? ""));
-  const [notes, setNotes] = useState(order.note ?? "");
   const [packageSize, setPackageSize] = useState(storeConfig.packageSize ?? "small");
   const effectivePhone = customerPhone || manualPhone;
   const canSubmit = !!effectivePhone && !!quote;
@@ -367,32 +366,6 @@ export default function OrderDetail() {
           </div>
         </div>
 
-        {/* Instrucciones para la entrega (dropoff) */}
-        <div style={{ background: F.surface, borderRadius: "12px", border: `1px solid ${F.border}`, overflow: "hidden" }}>
-          <div style={{ padding: "14px 18px", borderBottom: `1px solid ${F.border}`, background: F.bg }}>
-            <span style={{ fontSize: "12px", fontWeight: "700", color: F.muted, textTransform: "uppercase", letterSpacing: "0.5px" }}>
-              Instrucciones de entrega del cliente
-            </span>
-            <div style={{ fontSize: "12px", color: F.muted, marginTop: "2px" }}>
-              Tomadas de la nota del pedido. Edítalas solo si necesitas precisar algo para el courier.
-            </div>
-          </div>
-          <div style={{ padding: "18px" }}>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="El cliente no dejó instrucciones de entrega. Puedes agregar una si la conoces."
-              rows={2}
-              style={{
-                width: "100%", padding: "10px 12px", border: `1.5px solid ${F.border}`,
-                borderRadius: "8px", fontSize: "13px", color: F.text, background: F.surface,
-                outline: "none", resize: "vertical", boxSizing: "border-box",
-                fontFamily: FONT,
-              }}
-            />
-          </div>
-        </div>
-
         {/* Cotización */}
         <div style={{ background: F.surface, borderRadius: "12px", border: `1px solid ${F.border}`, overflow: "hidden" }}>
           <div style={{ padding: "14px 18px", borderBottom: `1px solid ${F.border}`, background: F.bg }}>
@@ -436,7 +409,7 @@ export default function OrderDetail() {
                 <Form method="post">
                   <input type="hidden" name="quoteId" value={quote?.id ?? ""} />
                   <input type="hidden" name="manualPhone" value={manualPhone} />
-                  <input type="hidden" name="dropoffNotes" value={notes} />
+                  <input type="hidden" name="dropoffNotes" value={order.note ?? ""} />
                   <input type="hidden" name="packageSize" value={packageSize} />
                   <button
                     type="button"
