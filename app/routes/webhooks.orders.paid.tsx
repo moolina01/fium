@@ -1,7 +1,7 @@
 import { authenticate, unauthenticated } from "../shopify.server";
 import type { ActionFunctionArgs } from "react-router";
 import db from "../db.server";
-import { getDeliveryQuote, createDelivery, uberCredsFromConfig } from "../services/uber-direct.server";
+import { getDeliveryQuote, createDelivery, uberCredsFromConfig, describeUberError } from "../services/uber-direct.server";
 import { logError, logInfo } from "../lib/logger.server";
 import { toPackageSize } from "../lib/package-size";
 import { normalizeChileanPhone } from "../lib/phone";
@@ -70,6 +70,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     uberTrackingUrl?: string;
     status: string;
     quoteAmount?: number;
+    failureReason?: string;
   };
   try {
     // Credenciales de Uber de esta tienda. Si no conectó su cuenta, esto lanza y
@@ -135,7 +136,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     };
   } catch (err) {
     logError("orders.paid/auto-dispatch", err, { shop, orderNumber: order.name });
-    deliveryData = { ...baseData, status: "failed" };
+    deliveryData = { ...baseData, status: "failed", failureReason: describeUberError(err) };
   }
 
   // 2) Insertar — si otro webhook concurrente ya insertó, ignorar el choque (P2002)

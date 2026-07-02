@@ -73,6 +73,9 @@ model Delivery {
   uberTrackingUrl String?
   status         String   @default("pending")
   quoteAmount    Float?
+  // Motivo de Uber cuando el auto-despacho falla (status "failed"), ej. el
+  // mensaje de UberApiError. Null si nunca falló o si se despachó a mano.
+  failureReason  String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 

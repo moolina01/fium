@@ -180,6 +180,31 @@ export class UberApiError extends Error {
   }
 }
 
+// ─── Mensajes de error legibles ─────────────────────────────────────────────
+// Códigos documentados por Uber Direct para deliveries/quotes rechazados.
+// Se usan para mostrarle al merchant POR QUÉ falló un auto-despacho, en vez de
+// un mensaje genérico de "no se pudo".
+
+const UBER_ERROR_MESSAGES: Record<string, string> = {
+  address_undeliverable: "Uber Direct no pudo ubicar o entregar en esa dirección.",
+  no_couriers_available: "No había couriers de Uber Direct disponibles en ese momento.",
+  distance_exceeds_limit: "La distancia entre tu tienda y el cliente excede el límite de Uber Direct.",
+  out_of_service_area: "La dirección del cliente queda fuera de la cobertura de Uber Direct.",
+  quote_expired: "La cotización expiró antes de poder crear el envío.",
+  invalid_quote: "La cotización usada ya no era válida.",
+};
+
+/** Convierte un error de Uber (o cualquier excepción) en un mensaje entendible para el merchant. */
+export function describeUberError(err: unknown): string {
+  if (err instanceof UberApiError) {
+    if (err.code && UBER_ERROR_MESSAGES[err.code]) return UBER_ERROR_MESSAGES[err.code];
+    if (err.code) return `Uber Direct rechazó el envío (${err.code}).`;
+    return `Uber Direct devolvió un error (código ${err.status}).`;
+  }
+  if (err instanceof UberNotConfiguredError) return err.message;
+  return err instanceof Error ? err.message : "Error desconocido al contactar Uber Direct.";
+}
+
 // ─── Helpers internos ───────────────────────────────────────────────────────
 
 async function uberFetch<T>(

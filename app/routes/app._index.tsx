@@ -18,6 +18,7 @@ type Order = {
   address: string;
   city: string;
   autoDispatchFailed: boolean;
+  failureReason: string | null;
 };
 
 type ActiveDelivery = {
@@ -134,6 +135,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const failedOrderIds = new Set(
     deliveries.filter((d: any) => d.status === "failed").map((d: any) => d.orderId)
   );
+  // Motivo real que devolvió Uber Direct para cada orden que falló en el auto-despacho.
+  const failureReasonByOrderId = new Map(
+    deliveries
+      .filter((d: any) => d.status === "failed")
+      .map((d: any) => [d.orderId, d.failureReason as string | null])
+  );
   const todayStr = new Date().toDateString();
 
   // Órdenes Shopify sin delivery creado aún (+ las que fallaron en auto-dispatch)
@@ -153,6 +160,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       address: e.node.shippingAddress?.address1 ?? "",
       city: e.node.shippingAddress?.city ?? "",
       autoDispatchFailed: failedOrderIds.has(e.node.id),
+      failureReason: failureReasonByOrderId.get(e.node.id) ?? null,
     }));
 
   // Deliveries activos — excluye failed (ya aparecen en "Por despachar")
@@ -570,7 +578,10 @@ function OrderTable({ orders }: { orders: Order[] }) {
               background: "#FEF2F2", borderRadius: "6px",
               fontSize: "12px", color: "#DC2626", fontWeight: "500",
             }}>
-              El auto-despacho falló al contactar Uber Direct. Despacha manualmente.
+              {order.failureReason
+                ? `El auto-despacho falló: ${order.failureReason}`
+                : "El auto-despacho falló al contactar Uber Direct."}{" "}
+              Despacha manualmente.
             </div>
           )}
         </div>
@@ -610,7 +621,12 @@ function DeliveryRow({ d }: { d: ActiveDelivery }) {
       borderBottom: "1px solid #f9fafb", background: "white",
     }}>
       <div>
-        <span style={{ fontSize: "14px", fontWeight: "600", color: "#111827" }}>{d.orderNumber}</span>
+        <Link
+          to={`/app/deliveries/${d.id}`}
+          style={{ fontSize: "14px", fontWeight: "600", color: "#4B2BE0", textDecoration: "none" }}
+        >
+          {d.orderNumber}
+        </Link>
         <span style={{ fontSize: "12px", color: "#9ca3af", marginLeft: "8px" }}>{d.timeAgo}</span>
       </div>
       <div style={{ fontSize: "13px", color: "#374151" }}>{d.customerName}</div>
