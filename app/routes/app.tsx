@@ -52,7 +52,7 @@ export default function App() {
     <AppProvider embedded apiKey={apiKey}>
       {!isOnboarding && (
         <s-app-nav>
-          <s-link href="/app">Órdenes</s-link>
+          <s-link href="/app">Envíos</s-link>
           <s-link href="/app/settings">Configuración</s-link>
         </s-app-nav>
       )}

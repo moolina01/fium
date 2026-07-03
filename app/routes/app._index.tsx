@@ -34,7 +34,7 @@ type ActiveDelivery = {
   timeAgo: string;
 };
 
-type HistoryDelivery = ActiveDelivery;
+type HistoryDelivery = ActiveDelivery & { isDeliveredToday: boolean };
 
 function calcMinutesAgo(dateStr: string) {
   return Math.floor((Date.now() - new Date(dateStr).getTime()) / 60000);
@@ -212,6 +212,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       status: d.status,
       uberTrackingUrl: d.uberTrackingUrl ?? null,
       timeAgo: calcTimeAgo(d.createdAt.toString()),
+      isDeliveredToday: d.status === "delivered" && new Date(d.createdAt).toDateString() === todayStr,
     }));
 
   return {
@@ -301,6 +302,8 @@ const GLOBAL_CSS = `
 .fu-btn { transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease; }
 .fu-btn:hover { transform: translateY(-1px); filter: brightness(1.06); }
 .fu-tab:hover { color: #4B2BE0; }
+.fu-tile { cursor: pointer; transition: background 0.15s ease; text-align: left; border: none; }
+.fu-tile:hover { background: #fafafb; }
 `;
 
 function fu(delay = 0, duration = 380): React.CSSProperties {
@@ -310,10 +313,27 @@ function fu(delay = 0, duration = 380): React.CSSProperties {
 export default function Index() {
   const data = useLoaderData<typeof loader>();
   const [tab, setTab] = useState<"pending" | "confirmed" | "history">("pending");
+  // Filtros que se activan al hacer clic en un tile de métricas, para saltar
+  // directo a "esos" pedidos en vez de tener que buscarlos a mano en la tabla.
+  const [pendingFilter, setPendingFilter] = useState<"all" | "problems">("all");
+  const [historyFilter, setHistoryFilter] = useState<"all" | "today">("all");
   const { pendingOrders, activeDeliveries, history, active, delivered, issues, setup } = data;
 
+  const visiblePendingOrders = pendingFilter === "problems"
+    ? pendingOrders.filter((o) => o.autoDispatchFailed)
+    : pendingOrders;
+  const visibleHistory = historyFilter === "today"
+    ? history.filter((d) => d.isDeliveredToday)
+    : history;
+
+  function goToTab(key: "pending" | "confirmed" | "history") {
+    setTab(key);
+    if (key === "pending") setPendingFilter("all");
+    if (key === "history") setHistoryFilter("all");
+  }
+
   return (
-    <s-page heading="Órdenes">
+    <s-page heading="Envíos">
       <style dangerouslySetInnerHTML={{ __html: GLOBAL_CSS }} />
       {/* Banner de setup incompleto — Fium no aparece en el checkout hasta completarlo */}
       {!setup.complete && (
@@ -354,23 +374,29 @@ export default function Index() {
           overflow: "hidden", ...T,
         }}>
           {([
-            [active,    "En curso",        "#4B2BE0"],
-            [delivered, "Entregadas hoy",  "#1D9E75"],
-            [issues,    "Con problemas",   "#DC2626"],
-          ] as const).map(([value, label, color], i) => (
-            <div key={label} style={{
-              padding: "20px 24px",
-              borderRight: i < 2 ? "1px solid #e5e7eb" : "none",
-              background: "white",
-              ...fu(i * 60),
-            }}>
+            { value: active,    label: "En curso",       color: "#4B2BE0", onClick: () => goToTab("confirmed") },
+            { value: delivered, label: "Entregadas hoy", color: "#1D9E75", onClick: () => { setTab("history"); setHistoryFilter("today"); } },
+            { value: issues,    label: "Con problemas",  color: "#DC2626", onClick: () => { setTab("pending"); setPendingFilter("problems"); } },
+          ] as const).map(({ value, label, color, onClick }, i) => (
+            <button
+              key={label}
+              className="fu-tile"
+              onClick={onClick}
+              title={`Ver ${label.toLowerCase()}`}
+              style={{
+                padding: "20px 24px",
+                borderRight: i < 2 ? "1px solid #e5e7eb" : "none",
+                background: "white",
+                ...fu(i * 60),
+              }}
+            >
               <div style={{ fontSize: "28px", fontWeight: "700", color, letterSpacing: "-1px", lineHeight: 1 }}>
                 <CountUp end={value} delay={100 + i * 60} />
               </div>
               <div style={{ fontSize: "13px", color: "#6b7280", marginTop: "4px" }}>
                 {label}
               </div>
-            </div>
+            </button>
           ))}
         </div>
       </s-section>
@@ -387,7 +413,7 @@ export default function Index() {
             <button
               key={key}
               className="fu-tab"
-              onClick={() => setTab(key)}
+              onClick={() => goToTab(key)}
               style={{
                 padding: "10px 16px", border: "none", background: "transparent",
                 fontSize: "13px", fontWeight: "600", cursor: "pointer", ...T,
@@ -410,14 +436,24 @@ export default function Index() {
           ))}
         </div>
 
-        <div key={tab} style={fu(0, 220)}>
+        <div key={`${tab}-${pendingFilter}-${historyFilter}`} style={fu(0, 220)}>
           {tab === "pending" && (
-            pendingOrders.length === 0
-              ? <EmptyState
-                  title="Aún no hay pedidos por despachar"
-                  text="Cuando un cliente elija Fium en el checkout, su pedido aparecerá aquí listo para despachar con un clic."
+            <>
+              {pendingFilter === "problems" && (
+                <FilterBanner
+                  text="Mostrando solo pedidos con problemas de auto-despacho"
+                  onClear={() => setPendingFilter("all")}
                 />
-              : <OrderTable orders={pendingOrders} />
+              )}
+              {visiblePendingOrders.length === 0
+                ? <EmptyState
+                    title={pendingFilter === "problems" ? "No hay pedidos con problemas" : "Aún no hay pedidos por despachar"}
+                    text={pendingFilter === "problems"
+                      ? "Ningún pedido está fallando el auto-despacho en este momento."
+                      : "Cuando un cliente elija Fium en el checkout, su pedido aparecerá aquí listo para despachar con un clic."}
+                  />
+                : <OrderTable orders={visiblePendingOrders} />}
+            </>
           )}
           {tab === "confirmed" && (
             activeDeliveries.length === 0
@@ -428,16 +464,48 @@ export default function Index() {
               : <DeliveryTable deliveries={activeDeliveries} />
           )}
           {tab === "history" && (
-            history.length === 0
-              ? <EmptyState
-                  title="Aún no hay envíos completados"
-                  text="Aquí verás el historial de tus entregas, cancelaciones y devoluciones."
+            <>
+              {historyFilter === "today" && (
+                <FilterBanner
+                  text="Mostrando solo lo entregado hoy"
+                  onClear={() => setHistoryFilter("all")}
                 />
-              : <HistoryTable deliveries={history} />
+              )}
+              {visibleHistory.length === 0
+                ? <EmptyState
+                    title={historyFilter === "today" ? "Aún no has entregado nada hoy" : "Aún no hay envíos completados"}
+                    text={historyFilter === "today"
+                      ? "Los pedidos entregados hoy van a aparecer aquí."
+                      : "Aquí verás el historial de tus entregas, cancelaciones y devoluciones."}
+                  />
+                : <HistoryTable deliveries={visibleHistory} />}
+            </>
           )}
         </div>
       </s-section>
     </s-page>
+  );
+}
+
+function FilterBanner({ text, onClear }: { text: string; onClear: () => void }) {
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", justifyContent: "space-between",
+      background: "#EEEDFE", borderBottom: "1px solid #e5e7eb",
+      padding: "9px 16px", fontSize: "12px", color: "#4B2BE0", fontWeight: "600", ...T,
+    }}>
+      <span>{text}</span>
+      <button
+        onClick={onClear}
+        style={{
+          background: "none", border: "none", cursor: "pointer",
+          color: "#4B2BE0", fontSize: "12px", fontWeight: "600",
+          textDecoration: "underline", padding: 0, ...T,
+        }}
+      >
+        Ver todos
+      </button>
+    </div>
   );
 }
 
