@@ -6,6 +6,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { REGIONES, REGIONES_COMUNAS } from "../data/chile";
 import { colors as F, FONT, DISPLAY_FONT } from "../lib/theme";
+import { CountUp } from "../components/CountUp";
 
 // ─── CSS keyframes ────────────────────────────────────────────────────────────
 const GLOBAL_CSS = `
@@ -75,11 +76,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     contactName: formData.get("contactName") as string,
     phone: formData.get("phone") as string,
     address: formData.get("address") as string,
+    pickupNotes: (formData.get("pickupNotes") as string) || null,
     region: formData.get("region") as string,
     comuna: formData.get("comuna") as string,
     zipCode: formData.get("zipCode") as string,
   };
-  const missing = Object.entries(data).filter(([k, v]) => k !== "shop" && !v);
+  const missing = Object.entries(data).filter(([k, v]) => k !== "shop" && k !== "pickupNotes" && !v);
   if (missing.length > 0) return { error: "Completa todos los campos para continuar." };
   await db.storeConfig.create({ data });
   return { success: true };
@@ -340,12 +342,22 @@ type FormValues = {
   contactName: string;
   phone: string;
   address: string;
+  pickupNotes: string;
   region: string;
   comuna: string;
   zipCode: string;
 };
 
-const QUESTIONS = [
+type Question = {
+  key: keyof FormValues;
+  question: string;
+  hint: string;
+  placeholder?: string;
+  type: "text" | "tel" | "region-select" | "comuna-select";
+  optional?: boolean;
+};
+
+const QUESTIONS: Question[] = [
   {
     key: "contactName" as keyof FormValues,
     question: "¿Cómo te llamamos?",
@@ -368,6 +380,14 @@ const QUESTIONS = [
     type: "text" as const,
   },
   {
+    key: "pickupNotes" as keyof FormValues,
+    question: "¿Alguna instrucción para el courier al retirar?",
+    hint: "Opcional — ej. tocar timbre, retirar en local 5",
+    placeholder: "Ej: Tocar timbre, retirar en local 5",
+    type: "text" as const,
+    optional: true,
+  },
+  {
     key: "region" as keyof FormValues,
     question: "¿En qué región estás?",
     hint: "",
@@ -386,7 +406,7 @@ const QUESTIONS = [
     placeholder: "7500000",
     type: "text" as const,
   },
-] as const;
+];
 
 function ConversationalForm({
   saving,
@@ -402,7 +422,7 @@ function ConversationalForm({
   const [dir, setDir] = useState<"fwd" | "back">("fwd");
   const [animKey, setAnimKey] = useState(0);
   const [values, setValues] = useState<FormValues>({
-    contactName: "", phone: "", address: "", region: "", comuna: "", zipCode: "",
+    contactName: "", phone: "", address: "", pickupNotes: "", region: "", comuna: "", zipCode: "",
   });
   const [currentInput, setCurrentInput] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -424,8 +444,8 @@ function ConversationalForm({
 
   function advance(override?: string) {
     const val = override ?? currentInput;
-    if (!val.trim()) return;
     const q = QUESTIONS[subStep];
+    if (!q.optional && !val.trim()) return;
     const updated = { ...values, [q.key]: val };
     if (q.key === "region") updated.comuna = "";
     setValues(updated);
@@ -443,7 +463,8 @@ function ConversationalForm({
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Enter" && currentInput.trim()) { e.preventDefault(); advance(); }
+    const q = QUESTIONS[subStep];
+    if (e.key === "Enter" && (q.optional || currentInput.trim())) { e.preventDefault(); advance(); }
   }
 
   const slideStyle: React.CSSProperties = {
@@ -467,7 +488,7 @@ function ConversationalForm({
 
   const q = QUESTIONS[subStep];
   const isSelect = q.type === "region-select" || q.type === "comuna-select";
-  const canAdvance = currentInput.trim().length > 0;
+  const canAdvance = q.optional || currentInput.trim().length > 0;
 
   return (
     <div style={{ width: "100%" }}>
@@ -588,7 +609,9 @@ function ConversationalForm({
             transition: "background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease",
           }}
         >
-          {subStep === total - 1 ? "Ver resumen →" : "Continuar →"}
+          {!currentInput.trim() && q.optional
+            ? "Omitir →"
+            : subStep === total - 1 ? "Ver resumen →" : "Continuar →"}
         </button>
 
         {!isSelect && (
@@ -617,9 +640,10 @@ function ReviewScreen({
     { label: "Nombre", value: values.contactName, step: 0 },
     { label: "Teléfono", value: values.phone, step: 1 },
     { label: "Dirección", value: values.address, step: 2 },
-    { label: "Región", value: values.region, step: 3 },
-    { label: "Comuna", value: values.comuna, step: 4 },
-    { label: "Cód. postal", value: values.zipCode, step: 5 },
+    { label: "Instrucciones", value: values.pickupNotes || "Sin instrucciones", step: 3 },
+    { label: "Región", value: values.region, step: 4 },
+    { label: "Comuna", value: values.comuna, step: 5 },
+    { label: "Cód. postal", value: values.zipCode, step: 6 },
   ];
 
   return (
@@ -678,6 +702,7 @@ function ReviewScreen({
         <input type="hidden" name="contactName" value={values.contactName} />
         <input type="hidden" name="phone" value={values.phone} />
         <input type="hidden" name="address" value={values.address} />
+        <input type="hidden" name="pickupNotes" value={values.pickupNotes} />
         <input type="hidden" name="region" value={values.region} />
         <input type="hidden" name="comuna" value={values.comuna} />
         <input type="hidden" name="zipCode" value={values.zipCode} />
@@ -778,26 +803,6 @@ function DoneStep() {
       </Link>
     </div>
   );
-}
-
-// ─── CountUp (contador animado de las estadísticas) ─────────────────────────────
-// Empieza en 0 (igual en server y client → sin mismatch de hidratación) y sube.
-function CountUp({ end, duration = 1100, delay = 0 }: { end: number; duration?: number; delay?: number }) {
-  const [n, setN] = useState(0);
-  useEffect(() => {
-    let raf = 0;
-    let start: number | null = null;
-    const tick = (t: number) => {
-      if (start === null) start = t;
-      const p = Math.min((t - start) / duration, 1);
-      const eased = 1 - Math.pow(1 - p, 3); // easeOutCubic
-      setN(Math.round(eased * end));
-      if (p < 1) raf = requestAnimationFrame(tick);
-    };
-    const timer = setTimeout(() => { raf = requestAnimationFrame(tick); }, delay);
-    return () => { clearTimeout(timer); cancelAnimationFrame(raf); };
-  }, [end, duration, delay]);
-  return <>{n}</>;
 }
 
 // ─── Bubbles (fondo animado del welcome) ────────────────────────────────────────

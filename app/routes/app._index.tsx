@@ -8,11 +8,13 @@ import { getDelivery, cancelDelivery, getStoreUberCreds, type UberCreds } from "
 import { getSetupChecklist, type SetupChecklist } from "../lib/setup.server";
 import { logError } from "../lib/logger.server";
 import { FONT } from "../lib/theme";
+import { CountUp } from "../components/CountUp";
 
 type Order = {
   id: string;
   name: string;
   timeAgo: string;
+  minutesAgo: number;
   orderId: string;
   customerName: string;
   address: string;
@@ -34,13 +36,25 @@ type ActiveDelivery = {
 
 type HistoryDelivery = ActiveDelivery;
 
+function calcMinutesAgo(dateStr: string) {
+  return Math.floor((Date.now() - new Date(dateStr).getTime()) / 60000);
+}
+
 function calcTimeAgo(dateStr: string) {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
+  const mins = calcMinutesAgo(dateStr);
   if (mins < 60) return `hace ${mins} min`;
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `hace ${hrs}h`;
   return `hace ${Math.floor(hrs / 24)}d`;
+}
+
+// Fium promete entrega bajo 60 min de punta a punta. Si un pedido lleva 15+ min
+// sin despacharse ya le está comiendo el margen a esa promesa, y sobre 30 min es
+// difícil que el envío completo (retiro + entrega) alcance a cumplirla.
+function pendingUrgency(minutesAgo: number): { color: string; textColor: string } | null {
+  if (minutesAgo >= 30) return { color: "#DC2626", textColor: "#DC2626" };
+  if (minutesAgo >= 15) return { color: "#EF9F27", textColor: "#B45309" };
+  return null;
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -143,7 +157,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   );
   const todayStr = new Date().toDateString();
 
-  // Órdenes Shopify sin delivery creado aún (+ las que fallaron en auto-dispatch)
+  // Órdenes Shopify sin delivery creado aún (+ las que fallaron en auto-dispatch).
+  // Se ordenan de más antigua a más nueva: son las que primero hay que despachar
+  // para no comerse el margen de la promesa de entrega bajo 60 min.
   const pendingOrders: Order[] = raw
     .filter((e: any) =>
       e.node.shippingLines.edges.some((s: any) => {
@@ -151,10 +167,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         return (title.includes("uber") || title.includes("fium")) && !deliveredOrderIds.has(e.node.id);
       })
     )
+    .sort(
+      (a: { node: { createdAt: string } }, b: { node: { createdAt: string } }) =>
+        new Date(a.node.createdAt).getTime() - new Date(b.node.createdAt).getTime()
+    )
     .map((e: any) => ({
       id: e.node.id,
       name: e.node.name,
       timeAgo: calcTimeAgo(e.node.createdAt),
+      minutesAgo: calcMinutesAgo(e.node.createdAt),
       orderId: (e.node.id as string).split("/").pop() ?? "",
       customerName: e.node.shippingAddress?.name ?? "Sin nombre",
       address: e.node.shippingAddress?.address1 ?? "",
@@ -262,6 +283,30 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 const T = { fontFamily: FONT };
 
+// ─── Movimiento del dashboard ───────────────────────────────────────────────
+// Mismo lenguaje de animación que el onboarding (fade-up + pulse), para que el
+// panel principal no se sienta estático comparado con el resto de la app.
+const GLOBAL_CSS = `
+@keyframes fuFadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fuPulse {
+  0%   { box-shadow: 0 0 0 0 rgba(29,158,117,0.5); }
+  70%  { box-shadow: 0 0 0 6px rgba(29,158,117,0); }
+  100% { box-shadow: 0 0 0 0 rgba(29,158,117,0); }
+}
+.fu-row { transition: background 0.15s ease; }
+.fu-row:hover { background: #fafafb; }
+.fu-btn { transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease; }
+.fu-btn:hover { transform: translateY(-1px); filter: brightness(1.06); }
+.fu-tab:hover { color: #4B2BE0; }
+`;
+
+function fu(delay = 0, duration = 380): React.CSSProperties {
+  return { animation: `fuFadeUp ${duration}ms ${delay}ms cubic-bezier(0.22,1,0.36,1) both` };
+}
+
 export default function Index() {
   const data = useLoaderData<typeof loader>();
   const [tab, setTab] = useState<"pending" | "confirmed" | "history">("pending");
@@ -269,6 +314,7 @@ export default function Index() {
 
   return (
     <s-page heading="Órdenes">
+      <style dangerouslySetInnerHTML={{ __html: GLOBAL_CSS }} />
       {/* Banner de setup incompleto — Fium no aparece en el checkout hasta completarlo */}
       {!setup.complete && (
         <s-section>
@@ -293,6 +339,7 @@ export default function Index() {
             <span style={{
               width: "7px", height: "7px", borderRadius: "50%",
               background: "#1D9E75", display: "inline-block",
+              animation: "fuPulse 2s ease-out infinite",
             }} />
             <span style={{ fontSize: "12px", color: "#374151", fontWeight: "500" }}>Uber Direct activo</span>
           </div>
@@ -307,17 +354,18 @@ export default function Index() {
           overflow: "hidden", ...T,
         }}>
           {([
-            [String(active),    "En curso",        "#4B2BE0"],
-            [String(delivered), "Entregadas hoy",  "#1D9E75"],
-            [String(issues),    "Con problemas",   "#DC2626"],
+            [active,    "En curso",        "#4B2BE0"],
+            [delivered, "Entregadas hoy",  "#1D9E75"],
+            [issues,    "Con problemas",   "#DC2626"],
           ] as const).map(([value, label, color], i) => (
             <div key={label} style={{
               padding: "20px 24px",
               borderRight: i < 2 ? "1px solid #e5e7eb" : "none",
               background: "white",
+              ...fu(i * 60),
             }}>
               <div style={{ fontSize: "28px", fontWeight: "700", color, letterSpacing: "-1px", lineHeight: 1 }}>
-                {value}
+                <CountUp end={value} delay={100 + i * 60} />
               </div>
               <div style={{ fontSize: "13px", color: "#6b7280", marginTop: "4px" }}>
                 {label}
@@ -338,6 +386,7 @@ export default function Index() {
           ] as const).map(({ key, label, count }) => (
             <button
               key={key}
+              className="fu-tab"
               onClick={() => setTab(key)}
               style={{
                 padding: "10px 16px", border: "none", background: "transparent",
@@ -345,6 +394,7 @@ export default function Index() {
                 color: tab === key ? "#111827" : "#9ca3af",
                 borderBottom: tab === key ? "2px solid #4B2BE0" : "2px solid transparent",
                 marginBottom: "-1px", display: "flex", alignItems: "center", gap: "6px",
+                transition: "color 0.15s ease, border-color 0.15s ease",
               }}
             >
               {label}
@@ -360,30 +410,32 @@ export default function Index() {
           ))}
         </div>
 
-        {tab === "pending" && (
-          pendingOrders.length === 0
-            ? <EmptyState
-                title="Aún no hay pedidos por despachar"
-                text="Cuando un cliente elija Fium en el checkout, su pedido aparecerá aquí listo para despachar con un clic."
-              />
-            : <OrderTable orders={pendingOrders} />
-        )}
-        {tab === "confirmed" && (
-          activeDeliveries.length === 0
-            ? <EmptyState
-                title="No hay envíos en curso"
-                text="Los envíos que despaches aparecerán aquí con su estado en tiempo real, desde que el courier los retira hasta la entrega."
-              />
-            : <DeliveryTable deliveries={activeDeliveries} />
-        )}
-        {tab === "history" && (
-          history.length === 0
-            ? <EmptyState
-                title="Aún no hay envíos completados"
-                text="Aquí verás el historial de tus entregas, cancelaciones y devoluciones."
-              />
-            : <HistoryTable deliveries={history} />
-        )}
+        <div key={tab} style={fu(0, 220)}>
+          {tab === "pending" && (
+            pendingOrders.length === 0
+              ? <EmptyState
+                  title="Aún no hay pedidos por despachar"
+                  text="Cuando un cliente elija Fium en el checkout, su pedido aparecerá aquí listo para despachar con un clic."
+                />
+              : <OrderTable orders={pendingOrders} />
+          )}
+          {tab === "confirmed" && (
+            activeDeliveries.length === 0
+              ? <EmptyState
+                  title="No hay envíos en curso"
+                  text="Los envíos que despaches aparecerán aquí con su estado en tiempo real, desde que el courier los retira hasta la entrega."
+                />
+              : <DeliveryTable deliveries={activeDeliveries} />
+          )}
+          {tab === "history" && (
+            history.length === 0
+              ? <EmptyState
+                  title="Aún no hay envíos completados"
+                  text="Aquí verás el historial de tus entregas, cancelaciones y devoluciones."
+                />
+              : <HistoryTable deliveries={history} />
+          )}
+        </div>
       </s-section>
     </s-page>
   );
@@ -543,23 +595,33 @@ function OrderTable({ orders }: { orders: Order[] }) {
           </div>
         ))}
       </div>
-      {orders.map((order) => (
-        <div key={order.id} style={{
+      {orders.map((order, i) => {
+        const urgency = pendingUrgency(order.minutesAgo);
+        return (
+        <div key={order.id} className="fu-row" style={{
           borderBottom: "1px solid #f9fafb", background: "white",
+          ...fu(Math.min(i, 8) * 35),
         }}>
           <div style={{
             display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto",
             alignItems: "center", padding: "13px 16px",
           }}>
-            <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              {urgency && (
+                <span
+                  title={order.minutesAgo >= 30 ? "Lleva más de 30 min sin despacharse" : "Lleva más de 15 min sin despacharse"}
+                  style={{ width: "7px", height: "7px", borderRadius: "50%", background: urgency.color, flexShrink: 0 }}
+                />
+              )}
               <span style={{ fontSize: "14px", fontWeight: "600", color: "#111827" }}>{order.name}</span>
-              <span style={{ fontSize: "12px", color: "#9ca3af", marginLeft: "8px" }}>{order.timeAgo}</span>
+              <span style={{ fontSize: "12px", color: urgency?.textColor ?? "#9ca3af", fontWeight: urgency ? "700" : "400" }}>{order.timeAgo}</span>
             </div>
             <div style={{ fontSize: "13px", color: "#374151" }}>{order.customerName}</div>
             <div style={{ fontSize: "13px", color: "#6b7280" }}>{order.address}, {order.city}</div>
             <div>
               <Link
                 to={`/app/orders/${order.orderId}`}
+                className="fu-btn"
                 style={{
                   display: "inline-block", padding: "6px 14px",
                   background: order.autoDispatchFailed ? "#DC2626" : "#4B2BE0",
@@ -585,7 +647,8 @@ function OrderTable({ orders }: { orders: Order[] }) {
             </div>
           )}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -603,22 +666,23 @@ function DeliveryTable({ deliveries }: { deliveries: ActiveDelivery[] }) {
           </div>
         ))}
       </div>
-      {deliveries.map((d) => <DeliveryRow key={d.id} d={d} />)}
+      {deliveries.map((d, i) => <DeliveryRow key={d.id} d={d} delay={Math.min(i, 8) * 35} />)}
     </div>
   );
 }
 
-function DeliveryRow({ d }: { d: ActiveDelivery }) {
+function DeliveryRow({ d, delay = 0 }: { d: ActiveDelivery; delay?: number }) {
   const fetcher = useFetcher<{ error?: string; ok?: boolean }>();
   const [confirming, setConfirming] = useState(false);
   const busy = fetcher.state !== "idle";
   const canCancel = !["delivered", "canceled", "returned"].includes(d.status);
 
   return (
-    <div style={{
+    <div className="fu-row" style={{
       display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto auto",
       alignItems: "center", padding: "13px 16px",
       borderBottom: "1px solid #f9fafb", background: "white",
+      ...fu(delay),
     }}>
       <div>
         <Link
@@ -709,18 +773,18 @@ function HistoryTable({ deliveries }: { deliveries: HistoryDelivery[] }) {
           </div>
         ))}
       </div>
-      {deliveries.map((d) => <HistoryRow key={d.id} d={d} />)}
+      {deliveries.map((d, i) => <HistoryRow key={d.id} d={d} delay={Math.min(i, 8) * 35} />)}
     </div>
   );
 }
 
-function HistoryRow({ d }: { d: HistoryDelivery }) {
+function HistoryRow({ d, delay = 0 }: { d: HistoryDelivery; delay?: number }) {
   const fetcher = useFetcher<{ image?: string; kind?: string; error?: string }>();
   const loading = fetcher.state !== "idle";
   const loadProof = () => fetcher.load(`/app/deliveries/${d.id}/proof`);
 
   return (
-    <div style={{ borderBottom: "1px solid #f9fafb", background: "white" }}>
+    <div className="fu-row" style={{ borderBottom: "1px solid #f9fafb", background: "white", ...fu(delay) }}>
       <div style={{
         display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto auto",
         alignItems: "center", padding: "13px 16px",
