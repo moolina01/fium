@@ -2,6 +2,7 @@ import db from "../db.server";
 import { encrypt, decrypt } from "./crypto.server";
 import { testUberConnection } from "../services/uber-direct.server";
 import { ensureUberWebhookForShop } from "../shopify.server";
+import { logError } from "./logger.server";
 
 /**
  * Valida, cifra y guarda las credenciales de Uber Direct de una tienda. Usada
@@ -38,7 +39,10 @@ export async function saveUberCredentials(
   // Validar contra Uber antes de guardar nada.
   try {
     await testUberConnection({ clientId: uberClientId, clientSecret: secretPlain, customerId: uberCustomerId });
-  } catch {
+  } catch (e) {
+    // Sin este log no hay forma de saber POR QUÉ Uber rechazó las credenciales
+    // (client_id inválido, secret rotado, cuenta sin activar, rate limit, etc.).
+    logError("uber-credentials/save", e, { shop, uberClientId, uberCustomerId });
     return { error: "No se pudo conectar con Uber. Revisa el Client ID y el Client Secret." };
   }
 
