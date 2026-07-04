@@ -25,7 +25,7 @@ export async function isCarrierRegistered(shop: string, accessToken: string): Pr
 }
 
 export type SetupStep = {
-  key: "address" | "carrier" | "phone";
+  key: "address" | "uber" | "shopifyActivation";
   label: string;
   description: string;
   done: boolean;
@@ -40,6 +40,13 @@ export type SetupChecklist = {
   // El carrier service existe en Shopify (se registra solo al instalar). Sirve para
   // distinguir "registrado pero falta agregarlo a la zona de envío" de "activo en vivo".
   carrierRegistered: boolean;
+  // Sub-estado crudo del paso "shopifyActivation" — el paso combina 2 confirmaciones
+  // (zona de envío + teléfono obligatorio) bajo un solo botón, pero los cards que
+  // renderizan ese paso necesitan cada sub-estado por separado para pintar 2 líneas.
+  carrierActivatedAck: boolean;
+  phoneRequiredAck: boolean;
+  // Credenciales de Uber Direct guardadas (no valida contra Uber en cada carga).
+  uberConnected: boolean;
 };
 
 /**
@@ -53,6 +60,11 @@ export async function getSetupChecklist(shop: string, accessToken: string): Prom
     isCarrierRegistered(shop, accessToken),
   ]);
 
+  const carrierActivatedAck = !!config?.carrierActivatedAck;
+  const phoneRequiredAck = !!config?.phoneRequiredAck;
+  const uberConnected = !!(config?.uberClientId && config?.uberClientSecret && config?.uberCustomerId);
+  const carrierDone = carrierActivatedAck || !!config?.lastRateRequestAt;
+
   const steps: SetupStep[] = [
     {
       key: "address",
@@ -61,20 +73,18 @@ export async function getSetupChecklist(shop: string, accessToken: string): Prom
       done: !!config,
     },
     {
-      key: "carrier",
-      // El carrier service se registra solo al instalar la app (afterAuth), así que
-      // "registrado" NO significa que el merchant lo configuró. El paso se marca hecho
-      // cuando el merchant confirma que lo agregó a su zona de envío ("Ya lo activé")
-      // O cuando Shopify ya pidió tarifas en un checkout real (señal en vivo).
-      label: "Activa Fium en tu checkout",
-      description: "Agrégalo a tu zona de envío en Shopify y confirma con \"Ya lo activé\".",
-      done: !!config?.carrierActivatedAck || !!config?.lastRateRequestAt,
+      key: "uber",
+      label: "Conecta tu cuenta de Uber Direct",
+      description: "Tus credenciales de Uber Direct, para cotizar y despachar envíos.",
+      done: uberConnected,
     },
     {
-      key: "phone",
-      label: "Exige teléfono en el checkout",
-      description: "Uber necesita el teléfono del cliente para cada envío.",
-      done: !!config?.phoneRequiredAck,
+      key: "shopifyActivation",
+      // Combina 2 confirmaciones (zona de envío + teléfono obligatorio) en un solo
+      // paso con un solo botón — ver UberConnectCard/ShopifyActivationCard.
+      label: "Activa Fium en tu checkout",
+      description: "Agrégalo a tu zona de envío y exige el teléfono del cliente.",
+      done: carrierDone && phoneRequiredAck,
     },
   ];
 
@@ -83,5 +93,8 @@ export async function getSetupChecklist(shop: string, accessToken: string): Prom
     complete: steps.every((s) => s.done),
     carrierLiveAt: config?.lastRateRequestAt?.toISOString() ?? null,
     carrierRegistered,
+    carrierActivatedAck,
+    phoneRequiredAck,
+    uberConnected,
   };
 }

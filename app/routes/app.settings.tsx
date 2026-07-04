@@ -1,13 +1,12 @@
 import { useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
-import { authenticate, registerCarrierService, ensureUberWebhookForShop } from "../shopify.server";
+import { authenticate, registerCarrierService } from "../shopify.server";
 import db from "../db.server";
 import { REGIONES, REGIONES_COMUNAS } from "../data/chile";
 import { isCarrierRegistered } from "../lib/setup.server";
+import { saveUberCredentials } from "../lib/uber-credentials.server";
 import { PACKAGE_SIZES, toPackageSize } from "../lib/package-size";
-import { testUberConnection } from "../services/uber-direct.server";
-import { encrypt, decrypt } from "../lib/crypto.server";
 import { FONT } from "../lib/theme";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -51,44 +50,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   if (intent === "uber_credentials") {
-    const uberClientId = ((formData.get("uberClientId") as string) || "").trim();
-    const uberCustomerId = ((formData.get("uberCustomerId") as string) || "").trim();
-    const rawSecret = ((formData.get("uberClientSecret") as string) || "").trim();
-
-    if (!uberClientId || !uberCustomerId) {
-      return { error: "Completa el Client ID y el Customer ID.", intent };
-    }
-
-    const existing = await db.storeConfig.findUnique({ where: { shop: session.shop } });
-    if (!existing) {
-      return { error: "Primero guarda tu punto de despacho.", intent };
-    }
-
-    // Si el campo del secret va vacío, conservamos el ya guardado (permite editar
-    // Client ID / Customer ID sin volver a pegar el secret).
-    let secretPlain = rawSecret;
-    if (!secretPlain) {
-      if (!existing.uberClientSecret) {
-        return { error: "Ingresa el Client Secret de Uber Direct.", intent };
-      }
-      secretPlain = decrypt(existing.uberClientSecret);
-    }
-
-    // Validar contra Uber antes de guardar nada.
-    try {
-      await testUberConnection({ clientId: uberClientId, clientSecret: secretPlain, customerId: uberCustomerId });
-    } catch {
-      return { error: "No se pudo conectar con Uber. Revisa el Client ID y el Client Secret.", intent };
-    }
-
-    await db.storeConfig.update({
-      where: { shop: session.shop },
-      data: { uberClientId, uberClientSecret: encrypt(secretPlain), uberCustomerId },
+    const result = await saveUberCredentials(session.shop, {
+      uberClientId: (formData.get("uberClientId") as string) || "",
+      uberCustomerId: (formData.get("uberCustomerId") as string) || "",
+      uberClientSecret: (formData.get("uberClientSecret") as string) || "",
     });
-
-    // Registrar el webhook de Uber para esta tienda (no bloquea si falla).
-    await ensureUberWebhookForShop(session.shop);
-
+    if ("error" in result) return { error: result.error, intent };
     return { success: "Cuenta de Uber Direct conectada correctamente.", intent };
   }
 

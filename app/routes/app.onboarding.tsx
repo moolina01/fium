@@ -1,12 +1,16 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { Form, Link, useActionData, useNavigation } from "react-router";
+import { Form, Link, useActionData, useFetcher, useLoaderData, useNavigation } from "react-router";
 import { ClipboardList, MousePointerClick, PackageCheck, ShoppingBag } from "lucide-react";
-import { authenticate } from "../shopify.server";
+import { authenticate, registerCarrierService } from "../shopify.server";
 import db from "../db.server";
 import { REGIONES, REGIONES_COMUNAS } from "../data/chile";
+import { getSetupChecklist } from "../lib/setup.server";
+import { saveUberCredentials } from "../lib/uber-credentials.server";
 import { colors as F, FONT, DISPLAY_FONT } from "../lib/theme";
 import { CountUp } from "../components/CountUp";
+import { UberConnectCard } from "../components/setup/UberConnectCard";
+import { ShopifyActivationCard } from "../components/setup/ShopifyActivationCard";
 
 // ─── CSS keyframes ────────────────────────────────────────────────────────────
 const GLOBAL_CSS = `
@@ -64,13 +68,51 @@ function fu(delay = 0, duration = 500): React.CSSProperties {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, redirect } = await authenticate.admin(request);
   const config = await db.storeConfig.findUnique({ where: { shop: session.shop } });
-  if (config) throw redirect("/app");
-  return null;
+  // Sin dirección todavía: el flujo cliente maneja Welcome → HowItWorks → Dirección.
+  if (!config) return { initialStep: null, setup: null };
+
+  // Con dirección guardada, el paso a mostrar se deriva del estado real en la DB
+  // (nunca de estado de cliente) — así una vuelta días después cae en el paso
+  // pendiente correcto, sin importar por dónde haya salido el merchant.
+  const setup = await getSetupChecklist(session.shop, session.accessToken!);
+  if (setup.complete) throw redirect("/app");
+  const initialStep: 3 | 4 = !setup.uberConnected ? 3 : 4;
+  return { initialStep, setup };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const formData = await request.formData();
+  const intent = (formData.get("intent") as string) || "address";
+
+  if (intent === "uber_credentials") {
+    const result = await saveUberCredentials(session.shop, {
+      uberClientId: (formData.get("uberClientId") as string) || "",
+      uberCustomerId: (formData.get("uberCustomerId") as string) || "",
+      uberClientSecret: (formData.get("uberClientSecret") as string) || "",
+    });
+    return "error" in result ? { error: result.error, intent } : { success: true, intent };
+  }
+
+  if (intent === "ack_shopify_activation") {
+    await db.storeConfig.update({
+      where: { shop: session.shop },
+      data: { carrierActivatedAck: true, phoneRequiredAck: true },
+    });
+    return { success: true, intent };
+  }
+
+  if (intent === "register_carrier") {
+    try {
+      const result = await registerCarrierService(session.shop, session.accessToken!);
+      if (result.ok || result.alreadyExists) return { success: true, intent };
+      return { error: "No se pudo activar Fium en el checkout. Revisa que tu plan de Shopify permita tarifas calculadas por terceros.", intent };
+    } catch {
+      return { error: "Error al activar Fium en el checkout. Intenta de nuevo.", intent };
+    }
+  }
+
+  // intent === "address"
   const data = {
     shop: session.shop,
     contactName: formData.get("contactName") as string,
@@ -82,34 +124,59 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     zipCode: formData.get("zipCode") as string,
   };
   const missing = Object.entries(data).filter(([k, v]) => k !== "shop" && k !== "pickupNotes" && !v);
-  if (missing.length > 0) return { error: "Completa todos los campos para continuar." };
+  if (missing.length > 0) return { error: "Completa todos los campos para continuar.", intent };
   await db.storeConfig.create({ data });
-  return { success: true };
+  return { success: true, intent };
 };
 
 // ─── Main component ───────────────────────────────────────────────────────────
-type Step = 0 | 1 | 2 | 3;
+type Step = 0 | 1 | 2 | 3 | 4 | 5;
 
 export default function Onboarding() {
+  const loaderData = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const saving = navigation.state === "submitting";
-  const [step, setStep] = useState<Step>(0);
+  const [step, setStep] = useState<Step>(loaderData.initialStep ?? 0);
   const [animKey, setAnimKey] = useState(0);
 
-  useEffect(() => {
-    if (actionData && "success" in actionData && actionData.success) {
-      setStep(3);
-      setAnimKey((k) => k + 1);
-    }
-  }, [actionData]);
+  const uberFetcher = useFetcher<{ error?: string; success?: boolean }>();
+  const shopifyFetcher = useFetcher<{ error?: string; success?: boolean }>();
+  const registerFetcher = useFetcher<{ error?: string; success?: boolean }>();
 
   function goTo(s: Step) {
     setStep(s);
     setAnimKey((k) => k + 1);
   }
 
+  // El guardado de dirección usa el <Form> de nivel superior (no un fetcher),
+  // así que su resultado llega por useActionData — al tener éxito, avanza al
+  // paso de conectar Uber.
+  useEffect(() => {
+    if (actionData && "success" in actionData && actionData.success && actionData.intent === "address") {
+      goTo(3);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actionData]);
+
+  // Uber y Shopify usan fetchers propios (no navegan la página), así que su
+  // avance se maneja por separado.
+  useEffect(() => {
+    if (uberFetcher.data && "success" in uberFetcher.data && uberFetcher.data.success) {
+      goTo(4);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uberFetcher.data]);
+
+  useEffect(() => {
+    if (shopifyFetcher.data && "success" in shopifyFetcher.data && shopifyFetcher.data.success) {
+      goTo(5);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shopifyFetcher.data]);
+
   const isDark = step === 0;
+  const totalSteps = 5;
 
   return (
     <>
@@ -120,8 +187,8 @@ export default function Onboarding() {
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, height: 3, zIndex: 100, background: F.border }}>
           <div style={{
             height: "100%",
-            width: step === 3 ? "100%" : `${(step / 3) * 100}%`,
-            background: step === 3 ? F.success : F.brand,
+            width: step === totalSteps ? "100%" : `${(step / totalSteps) * 100}%`,
+            background: step === totalSteps ? F.success : F.brand,
             borderRadius: "0 2px 2px 0",
             transition: "width 0.55s cubic-bezier(0.22,1,0.36,1), background 0.3s ease",
           }} />
@@ -162,11 +229,23 @@ export default function Onboarding() {
           {step === 2 && (
             <ConversationalForm
               saving={saving}
-              error={actionData && "error" in actionData ? actionData.error : undefined}
+              error={actionData && "error" in actionData && actionData.intent === "address" ? actionData.error : undefined}
               onBack={() => goTo(1)}
             />
           )}
-          {step === 3 && <DoneStep />}
+          {step === 3 && <UberConnectCard fetcher={uberFetcher} variant="onboarding" />}
+          {step === 4 && (
+            <ShopifyActivationCard
+              fetcher={shopifyFetcher}
+              registerFetcher={registerFetcher}
+              variant="onboarding"
+              carrierRegistered={loaderData.setup?.carrierRegistered ?? true}
+              carrierActivatedAck={loaderData.setup?.carrierActivatedAck ?? false}
+              phoneRequiredAck={loaderData.setup?.phoneRequiredAck ?? false}
+              carrierLiveAt={loaderData.setup?.carrierLiveAt ?? null}
+            />
+          )}
+          {step === 5 && <DoneStep />}
         </div>
       </div>
     </>
@@ -726,15 +805,8 @@ function ReviewScreen({
   );
 }
 
-// ─── Step 3: Done ─────────────────────────────────────────────────────────────
+// ─── Step 5: Done — se llega acá solo con los 3 pasos ya completos ────────────
 function DoneStep() {
-  const items = [
-    { done: true,  label: "Dirección de retiro guardada" },
-    { done: false, label: "Conecta tu cuenta de Uber Direct" },
-    { done: false, label: "Activa Fium en el checkout de Shopify" },
-    { done: false, label: "Exige teléfono en el checkout" },
-  ];
-
   return (
     <div style={{ width: "100%", textAlign: "center" }}>
       <div style={{ marginBottom: "28px", ...fu(0, 400) }}>
@@ -758,48 +830,24 @@ function DoneStep() {
       </div>
 
       <h2 style={{ fontSize: "24px", fontWeight: "700", color: F.ink, margin: "0 0 8px", fontFamily: DISPLAY_FONT, ...fu(100) }}>
-        ¡Tu cuenta está lista!
+        ¡Fium está activado!
       </h2>
       <p style={{ fontSize: "14px", color: F.muted, margin: "0 0 32px", ...fu(160) }}>
-        Sigue estos pasos para que fium funcione en tu tienda.
+        Tu tienda ya puede recibir y despachar pedidos con Uber Direct.
       </p>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "28px", textAlign: "left", ...fu(220) }}>
-        {items.map((item) => (
-          <div key={item.label} style={{
-            display: "flex", alignItems: "center", gap: "14px",
-            background: item.done ? F.successTint : F.surface,
-            border: `1px solid ${item.done ? "#A7E6C8" : F.border}`,
-            borderRadius: "10px", padding: "14px 16px",
-          }}>
-            <div style={{
-              width: 28, height: 28, borderRadius: "50%", flexShrink: 0,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              background: item.done ? F.success : F.brandTint,
-              color: item.done ? "#fff" : F.brand,
-              fontSize: "13px", fontWeight: "700",
-            }}>
-              {item.done ? "✓" : "→"}
-            </div>
-            <span style={{ fontSize: "14px", fontWeight: "500", color: item.done ? F.success : F.text }}>
-              {item.label}
-            </span>
-          </div>
-        ))}
-      </div>
-
       <Link
-        to="/app/settings"
+        to="/app"
         style={{
           display: "block", width: "100%", padding: "14px",
           background: F.brand, color: "#fff", borderRadius: "10px",
           fontSize: "15px", fontWeight: "600", textDecoration: "none",
           textAlign: "center", fontFamily: FONT,
           boxShadow: "0 4px 14px rgba(75,43,224,0.25)",
-          ...fu(300),
+          ...fu(220),
         }}
       >
-        Activar Fium en mi checkout →
+        Ir a mi panel →
       </Link>
     </div>
   );

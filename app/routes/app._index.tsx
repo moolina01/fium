@@ -6,9 +6,12 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import db from "../db.server";
 import { getDelivery, cancelDelivery, getStoreUberCreds, type UberCreds } from "../services/uber-direct.server";
 import { getSetupChecklist, type SetupChecklist } from "../lib/setup.server";
+import { saveUberCredentials } from "../lib/uber-credentials.server";
 import { logError } from "../lib/logger.server";
 import { FONT } from "../lib/theme";
 import { CountUp } from "../components/CountUp";
+import { UberConnectCard } from "../components/setup/UberConnectCard";
+import { ShopifyActivationCard } from "../components/setup/ShopifyActivationCard";
 
 type Order = {
   id: string;
@@ -236,20 +239,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const formData = await request.formData();
   const intent = formData.get("intent") as string;
 
-  if (intent === "ack_phone_required") {
+  if (intent === "ack_shopify_activation") {
     await db.storeConfig.update({
       where: { shop: session.shop },
-      data: { phoneRequiredAck: true },
+      data: { carrierActivatedAck: true, phoneRequiredAck: true },
     });
     return { ok: true };
   }
 
-  if (intent === "ack_carrier_activated") {
-    await db.storeConfig.update({
-      where: { shop: session.shop },
-      data: { carrierActivatedAck: true },
+  if (intent === "uber_credentials") {
+    const result = await saveUberCredentials(session.shop, {
+      uberClientId: (formData.get("uberClientId") as string) || "",
+      uberCustomerId: (formData.get("uberCustomerId") as string) || "",
+      uberClientSecret: (formData.get("uberClientSecret") as string) || "",
     });
-    return { ok: true };
+    return "error" in result ? { error: result.error } : { ok: true };
   }
 
   if (intent === "register_carrier") {
@@ -519,132 +523,76 @@ function EmptyState({ title, text }: { title: string; text: string }) {
 }
 
 function SetupBanner({ setup }: { setup: SetupChecklist }) {
-  const fetcher = useFetcher<{ error?: string; ok?: boolean }>();
-  const busy = fetcher.state !== "idle";
-  const carrierAckFetcher = useFetcher<{ ok?: boolean }>();
-  const carrierAckBusy = carrierAckFetcher.state !== "idle";
-  const phoneFetcher = useFetcher<{ ok?: boolean }>();
-  const phoneBusy = phoneFetcher.state !== "idle";
-  const carrierStep = setup.steps.find((s) => s.key === "carrier");
-  const phoneStep = setup.steps.find((s) => s.key === "phone");
+  const uberFetcher = useFetcher<{ error?: string; ok?: boolean }>();
+  const shopifyFetcher = useFetcher<{ error?: string; ok?: boolean }>();
+  const registerFetcher = useFetcher<{ error?: string; ok?: boolean }>();
+  const uberStep = setup.steps.find((s) => s.key === "uber")!;
+  const shopifyStep = setup.steps.find((s) => s.key === "shopifyActivation")!;
 
   return (
-    <div style={{
-      background: "white", border: "2px solid #4B2BE0", borderRadius: "12px",
-      overflow: "hidden", ...T,
-    }}>
-      <div style={{ padding: "16px 20px", borderBottom: "1px solid #f3f4f6" }}>
-        <div style={{ fontSize: "15px", fontWeight: "700", color: "#111827" }}>
-          Termina de configurar Fium
+    <div style={{ display: "flex", flexDirection: "column", gap: "12px", ...T }}>
+      <div style={{
+        background: "white", border: "2px solid #4B2BE0", borderRadius: "12px",
+        overflow: "hidden",
+      }}>
+        <div style={{ padding: "16px 20px", borderBottom: "1px solid #f3f4f6" }}>
+          <div style={{ fontSize: "15px", fontWeight: "700", color: "#111827" }}>
+            Termina de configurar Fium
+          </div>
+          <div style={{ fontSize: "13px", color: "#6b7280", marginTop: "2px" }}>
+            Completa estos pasos para que tus clientes puedan elegir Fium y los envíos funcionen sin problemas.
+          </div>
         </div>
-        <div style={{ fontSize: "13px", color: "#6b7280", marginTop: "2px" }}>
-          Completa estos pasos para que tus clientes puedan elegir Fium y los envíos funcionen sin problemas.
-        </div>
-      </div>
 
-      {/* Checklist */}
-      <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: "10px" }}>
-        {setup.steps.map((s) => (
-          <div key={s.key} style={{ display: "flex", alignItems: "flex-start", gap: "10px" }}>
-            <div style={{
-              width: "20px", height: "20px", borderRadius: "50%", flexShrink: 0, marginTop: "1px",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: "12px", fontWeight: "700",
-              background: s.done ? "#1D9E75" : "#f3f4f6",
-              color: s.done ? "white" : "#9ca3af",
-            }}>
-              {s.done ? "✓" : ""}
-            </div>
-            <div>
-              <div style={{ fontSize: "13px", fontWeight: "600", color: s.done ? "#9ca3af" : "#111827", textDecoration: s.done ? "line-through" : "none" }}>
-                {s.label}
+        {/* Checklist */}
+        <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: "10px" }}>
+          {setup.steps.map((s) => (
+            <div key={s.key} style={{ display: "flex", alignItems: "flex-start", gap: "10px" }}>
+              <div style={{
+                width: "20px", height: "20px", borderRadius: "50%", flexShrink: 0, marginTop: "1px",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: "12px", fontWeight: "700",
+                background: s.done ? "#1D9E75" : "#f3f4f6",
+                color: s.done ? "white" : "#9ca3af",
+              }}>
+                {s.done ? "✓" : ""}
               </div>
-              <div style={{ fontSize: "12px", color: "#9ca3af" }}>{s.description}</div>
+              <div>
+                <div style={{ fontSize: "13px", fontWeight: "600", color: s.done ? "#9ca3af" : "#111827", textDecoration: s.done ? "line-through" : "none" }}>
+                  {s.label}
+                </div>
+                <div style={{ fontSize: "12px", color: "#9ca3af" }}>{s.description}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Confirmación en vivo — Shopify ya pide tarifas de Fium en el checkout */}
+        {shopifyStep.done && setup.carrierLiveAt && (
+          <div style={{ padding: "0 20px 18px" }}>
+            <div style={{
+              background: "#E6F7F2", border: "1px solid #A7E6C8", borderRadius: "8px",
+              padding: "10px 14px", fontSize: "12px", color: "#0F7355", lineHeight: "1.6",
+            }}>
+              ✅ <strong>Activo en tu checkout.</strong> Shopify pidió cotizaciones de Fium {calcTimeAgo(setup.carrierLiveAt)}.
             </div>
           </div>
-        ))}
+        )}
       </div>
 
-      {/* Acción para el carrier — mismo formato que el paso del teléfono.
-          Ojo: el carrier service se registra solo al instalar (afterAuth), por eso
-          el paso NO se marca hecho por estar registrado, sino cuando el merchant
-          confirma ("Ya lo activé") o Shopify pide tarifas en vivo (carrierLiveAt). */}
-      {carrierStep && !carrierStep.done && (
-        <div style={{ padding: "0 20px 18px", borderTop: "1px solid #f3f4f6", paddingTop: "16px" }}>
-          <div style={{ fontSize: "13px", fontWeight: "600", color: "#111827", marginBottom: "4px" }}>
-            Activa Fium en el checkout de Shopify
-          </div>
-          <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "10px", lineHeight: "1.6", maxWidth: "520px" }}>
-            Para que Fium aparezca como opción de envío, agrégalo a tu zona de envío:
-            en Shopify ve a <strong style={{ color: "#374151" }}>Configuración → Envío y entrega</strong>, abre tu zona
-            de envío y agrega la tarifa <strong style={{ color: "#374151" }}>Fium</strong> (aparece en la lista de
-            transportistas). Luego confirma aquí.
-          </div>
-          {fetcher.data?.error && (
-            <div style={{ fontSize: "12px", color: "#DC2626", marginBottom: "10px" }}>
-              ⚠️ {fetcher.data.error}
-            </div>
-          )}
-          <carrierAckFetcher.Form method="post">
-            <input type="hidden" name="intent" value="ack_carrier_activated" />
-            <button type="submit" disabled={carrierAckBusy} style={{
-              padding: "10px 18px",
-              background: "white", color: "#4B2BE0",
-              border: "1.5px solid #4B2BE0", borderRadius: "8px",
-              fontSize: "13px", fontWeight: "600", cursor: carrierAckBusy ? "not-allowed" : "pointer", ...T,
-            }}>
-              {carrierAckBusy ? "Guardando..." : "Ya lo activé en Shopify"}
-            </button>
-          </carrierAckFetcher.Form>
-          {/* Fallback discreto: re-registrar si Fium no aparece en la lista (raro). */}
-          <fetcher.Form method="post" style={{ marginTop: "10px" }}>
-            <input type="hidden" name="intent" value="register_carrier" />
-            <button type="submit" disabled={busy} style={{
-              padding: "0", background: "none", border: "none",
-              color: "#9ca3af", textDecoration: "underline",
-              fontSize: "12px", cursor: busy ? "not-allowed" : "pointer", ...T,
-            }}>
-              {busy ? "Registrando..." : "¿Fium no aparece en la lista? Vuelve a registrarlo"}
-            </button>
-          </fetcher.Form>
-        </div>
-      )}
-
-      {/* Confirmación en vivo — Shopify ya pide tarifas de Fium en el checkout */}
-      {carrierStep && carrierStep.done && setup.carrierLiveAt && (
-        <div style={{ padding: "0 20px 18px" }}>
-          <div style={{
-            background: "#E6F7F2", border: "1px solid #A7E6C8", borderRadius: "8px",
-            padding: "10px 14px", fontSize: "12px", color: "#0F7355", lineHeight: "1.6",
-          }}>
-            ✅ <strong>Activo en tu checkout.</strong> Shopify pidió cotizaciones de Fium {calcTimeAgo(setup.carrierLiveAt)}.
-          </div>
-        </div>
-      )}
-
-      {/* Acción para exigir teléfono */}
-      {phoneStep && !phoneStep.done && (
-        <div style={{ padding: "0 20px 18px", borderTop: carrierStep && !carrierStep.done ? "1px solid #f3f4f6" : "none", paddingTop: carrierStep && !carrierStep.done ? "16px" : "0" }}>
-          <div style={{ fontSize: "13px", fontWeight: "600", color: "#111827", marginBottom: "4px" }}>
-            Exige el teléfono del cliente en tu checkout
-          </div>
-          <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "10px", lineHeight: "1.6", maxWidth: "520px" }}>
-            Uber necesita el teléfono para cada envío. Si un cliente no lo deja, no podrás despachar su pedido.
-            En Shopify ve a <strong style={{ color: "#374151" }}>Configuración → Pagos / Checkout → Información de contacto</strong> y
-            marca el teléfono como <strong style={{ color: "#374151" }}>obligatorio</strong>. Luego confirma aquí.
-          </div>
-          <phoneFetcher.Form method="post">
-            <input type="hidden" name="intent" value="ack_phone_required" />
-            <button type="submit" disabled={phoneBusy} style={{
-              padding: "10px 18px",
-              background: "white", color: "#4B2BE0",
-              border: "1.5px solid #4B2BE0", borderRadius: "8px",
-              fontSize: "13px", fontWeight: "600", cursor: phoneBusy ? "not-allowed" : "pointer", ...T,
-            }}>
-              {phoneBusy ? "Guardando..." : "Ya lo configuré en Shopify"}
-            </button>
-          </phoneFetcher.Form>
-        </div>
+      {/* Cards accionables — mismos componentes que usa el onboarding, así que
+          continuar la configuración acá se ve idéntico a como quedó pendiente. */}
+      {!uberStep.done && <UberConnectCard fetcher={uberFetcher} variant="banner" />}
+      {!shopifyStep.done && (
+        <ShopifyActivationCard
+          fetcher={shopifyFetcher}
+          registerFetcher={registerFetcher}
+          variant="banner"
+          carrierRegistered={setup.carrierRegistered}
+          carrierActivatedAck={setup.carrierActivatedAck}
+          phoneRequiredAck={setup.phoneRequiredAck}
+          carrierLiveAt={setup.carrierLiveAt}
+        />
       )}
     </div>
   );
