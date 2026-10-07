@@ -5,7 +5,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getDeliveryQuote, createDelivery, uberCredsFromConfig } from "../services/uber-direct.server";
-import { PACKAGE_SIZES, toPackageSize } from "../lib/package-size";
+import { PACKAGE_SIZES, toPackageSize, sizeFromGrams, weightToGrams, formatKg } from "../lib/package-size";
 import { normalizeChileanPhone } from "../lib/phone";
 import { fulfillOrderWithTracking } from "../lib/fulfillment.server";
 import { isUberTestShop } from "../lib/test-shops.server";
@@ -17,7 +17,8 @@ type ShopifyOrder = {
   phone: string | null;
   shippingAddress: { name: string; address1: string; city: string; province: string | null; zip: string; phone: string | null } | null;
   billingAddress: { phone: string | null } | null;
-  lineItems: { edges: Array<{ node: { title: string; quantity: number } }> };
+  totalWeight: string | number | null;
+  lineItems: { edges: Array<{ node: { title: string; quantity: number; requiresShipping: boolean; weight: { unit: string; value: number } | null } }> };
 };
 
 async function fetchOrder(
@@ -32,12 +33,21 @@ async function fetchOrder(
         totalPriceSet { shopMoney { amount currencyCode } }
         shippingAddress { name address1 city province zip phone }
         billingAddress { phone }
-        lineItems(first: 10) { edges { node { title quantity } } }
+        totalWeight
+        lineItems(first: 50) { edges { node { title quantity requiresShipping weight { unit value } } } }
       }
     }
   `, { variables: { id: `gid://shopify/Order/${orderId}` } });
   const json = await res.json();
   return json.data?.order ?? null;
+}
+
+/** Peso total en gramos de los productos que se envían. */
+function orderWeightGrams(order: ShopifyOrder): number {
+  const fromLines = order.lineItems.edges
+    .filter((e) => e.node.requiresShipping !== false)
+    .reduce((sum, e) => sum + weightToGrams(e.node.weight) * e.node.quantity, 0);
+  return fromLines || Number(order.totalWeight ?? 0);
 }
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
@@ -92,7 +102,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // desglose de lo que pagó el cliente). Usa el dominio .myshopify.com → siempre válido.
   const adminOrderUrl = `https://${session.shop}/admin/orders/${orderId}`;
 
-  return { order, storeConfig, quote, quoteError, orderId, formattedTotal, formattedFee, customerPhone, missingPhone, storePhone, adminOrderUrl };
+  // Peso total del pedido (gramos) → tamaño sugerido para Uber.
+  const totalGrams = orderWeightGrams(order);
+  const suggestedSize = sizeFromGrams(totalGrams);
+
+  return { order, storeConfig, quote, quoteError, orderId, formattedTotal, formattedFee, customerPhone, missingPhone, storePhone, adminOrderUrl, totalGrams, suggestedSize };
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
@@ -120,7 +134,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const manualPhone = formData.get("manualPhone") as string;
   const dropoffNotes = ((formData.get("dropoffNotes") as string) || "").trim() || undefined;
   const pickupNotes = storeConfig.pickupNotes || undefined;
-  const packageSize = toPackageSize(formData.get("packageSize") || storeConfig.packageSize);
+  const packageSize = toPackageSize(formData.get("packageSize") || sizeFromGrams(orderWeightGrams(order)) || storeConfig.packageSize);
   // Último respaldo: el teléfono de la tienda, para que aunque el merchant
   // borre el campo manual, Uber igual reciba un teléfono y pueda despachar.
   const dropoffPhone =
@@ -133,7 +147,12 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
   const pickupAddress = { streetAddress: [storeConfig.address], city: storeConfig.comuna, state: storeConfig.region, zipCode: storeConfig.zipCode };
   const dropoffAddress = { streetAddress: [order.shippingAddress.address1], city: order.shippingAddress.city, state: order.shippingAddress.province ?? order.shippingAddress.city, zipCode: order.shippingAddress.zip };
-  const manifestItems = order.lineItems.edges.map((e) => ({ name: e.node.title, quantity: e.node.quantity, size: packageSize }));
+  const manifestItems = order.lineItems.edges
+    .filter((e) => e.node.requiresShipping !== false)
+    .map((e) => {
+      const grams = weightToGrams(e.node.weight);
+      return { name: e.node.title, quantity: e.node.quantity, size: packageSize, ...(grams > 0 && { weight: grams }) };
+    });
   // Robo-courier de Uber (sandbox) SOLO para la tienda de review de Shopify.
   const testMode = isUberTestShop(session.shop);
 
@@ -143,7 +162,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     delivery = await createDelivery(creds, {
       quoteId: activeQuoteId,
       pickupName: storeConfig.contactName, pickupAddress, pickupPhone: storeConfig.phone, pickupNotes,
-      dropoffName: order.shippingAddress.name, dropoffAddress, dropoffPhone, dropoffNotes, manifestItems,
+      dropoffName: order.shippingAddress.name, dropoffAddress, dropoffPhone, dropoffNotes, manifestItems, testMode,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "";
@@ -190,7 +209,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function OrderDetail() {
-  const { order, storeConfig, quote, quoteError, formattedTotal, formattedFee, customerPhone, storePhone, adminOrderUrl } = useLoaderData<typeof loader>();
+  const { order, storeConfig, quote, quoteError, formattedTotal, formattedFee, customerPhone, storePhone, adminOrderUrl, totalGrams, suggestedSize } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const confirming = navigation.state === "submitting";
@@ -200,7 +219,8 @@ export default function OrderDetail() {
   // Si la orden no trae teléfono del cliente, pre-llenamos con el de la tienda
   // (Uber lo necesita sí o sí). El merchant puede cambiarlo antes de despachar.
   const [manualPhone, setManualPhone] = useState(customerPhone ? "" : (storePhone ?? ""));
-  const [packageSize, setPackageSize] = useState(storeConfig.packageSize ?? "small");
+  // Pre-seleccionado según el peso del pedido; el merchant puede cambiarlo.
+  const [packageSize, setPackageSize] = useState<string>(suggestedSize ?? storeConfig.packageSize ?? "medium");
   const effectivePhone = customerPhone || manualPhone;
   const canSubmit = !!effectivePhone && !!quote;
 
@@ -360,7 +380,10 @@ export default function OrderDetail() {
                 })}
               </div>
               <div style={{ fontSize: "12px", color: F.muted, marginTop: "8px" }}>
-                Esta descripción y el tamaño se envían a Uber Direct como contenido del paquete.
+                {totalGrams > 0
+                  ? <>Peso del pedido: <strong style={{ color: F.ink }}>{formatKg(totalGrams)}</strong>. El tamaño se sugiere según el peso; cámbialo si el paquete es más voluminoso.</>
+                  : <>Los productos no tienen peso cargado en Shopify — elige el tamaño a mano.</>}
+                {" "}Los productos, el peso y el tamaño se envían a Uber Direct.
               </div>
             </div>
           </div>

@@ -339,7 +339,7 @@ export default function Settings() {
                 <input name="pickupNotes" defaultValue={config?.pickupNotes ?? ""} placeholder="Ej: Tocar timbre, retirar en local 5" style={inp} />
               </Field>
               <Field label="Tamaño de paquete por defecto" fullWidth>
-                <select name="packageSize" defaultValue={config?.packageSize ?? "small"} style={inp}>
+                <select name="packageSize" defaultValue={config?.packageSize ?? "medium"} style={inp}>
                   {PACKAGE_SIZES.map((s) => (
                     <option key={s.value} value={s.value}>{s.label} — {s.hint}</option>
                   ))}

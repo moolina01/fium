@@ -3,7 +3,7 @@ import type { ActionFunctionArgs } from "react-router";
 import db from "../db.server";
 import { getDeliveryQuote, createDelivery, uberCredsFromConfig, describeUberError } from "../services/uber-direct.server";
 import { logError, logInfo } from "../lib/logger.server";
-import { toPackageSize } from "../lib/package-size";
+import { toPackageSize, sizeFromGrams } from "../lib/package-size";
 import { normalizeChileanPhone } from "../lib/phone";
 import { fulfillOrderWithTracking } from "../lib/fulfillment.server";
 import { isUberTestShop } from "../lib/test-shops.server";
@@ -12,7 +12,7 @@ type OrderPayload = {
   id: number;
   name: string;
   note: string | null;
-  shipping_lines: Array<{ title: string }>;
+  shipping_lines: Array<{ title: string; code: string | null }>;
   shipping_address: {
     name: string;
     address1: string;
@@ -21,7 +21,7 @@ type OrderPayload = {
     phone: string | null;
   } | null;
   billing_address: { phone: string | null } | null;
-  line_items: Array<{ title: string; quantity: number }>;
+  line_items: Array<{ title: string; quantity: number; grams: number; requires_shipping: boolean }>;
   customer: { phone: string | null; email: string | null } | null;
 };
 
@@ -32,10 +32,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const order = payload as OrderPayload;
 
-  // Solo procesar órdenes con envío Uber Direct
-  const isUberOrder = order.shipping_lines?.some((l) =>
-    l.title.toLowerCase().includes("uber")
-  );
+  // Solo procesar órdenes con envío Fium. Se identifica por el service_code de
+  // carrier.rates ("uber_direct"), que no cambia si se renombra la tarifa.
+  // El título queda como respaldo (mismo criterio que el dashboard).
+  const isUberOrder = order.shipping_lines?.some((l) => {
+    if (l.code === "uber_direct") return true;
+    const title = (l.title ?? "").toLowerCase();
+    return title.includes("fium") || title.includes("uber");
+  });
   if (!isUberOrder) return new Response("OK", { status: 200 });
 
   const config = await db.storeConfig.findUnique({ where: { shop } });
@@ -108,6 +112,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       );
     }
 
+    // Tamaño según el peso total del pedido (Uber lo usa para elegir vehículo).
+    // Sin peso cargado, se usa el tamaño por defecto de la tienda.
+    const shippableItems = order.line_items.filter((i) => i.requires_shipping !== false);
+    const totalGrams = shippableItems.reduce((sum, i) => sum + (i.grams ?? 0) * i.quantity, 0);
+    const packageSize = sizeFromGrams(totalGrams) ?? toPackageSize(config.packageSize);
+
     const delivery = await createDelivery(creds, {
       quoteId: quote.id,
       pickupName: config.contactName,
@@ -118,10 +128,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       dropoffAddress,
       dropoffPhone,
       dropoffNotes: order.note?.trim() || undefined,
-      manifestItems: order.line_items.map((i) => ({
+      manifestItems: shippableItems.map((i) => ({
         name: i.title,
         quantity: i.quantity,
-        size: toPackageSize(config.packageSize),
+        size: packageSize,
+        ...(i.grams > 0 && { weight: i.grams }),
       })),
       // Robo-courier de Uber (sandbox) SOLO para la tienda de review de Shopify.
       testMode: isUberTestShop(shop),

@@ -44,7 +44,7 @@ model StoreConfig {
   comuna      String
   zipCode     String
   pickupNotes String?  // Instrucciones para el courier al retirar (ej: "Tocar timbre, local 5")
-  packageSize String   @default("small")  // Tamaño por defecto del paquete: small | medium | large | xlarge
+  packageSize String   @default("medium")  // Tamaño por defecto del paquete: small | medium | large | xlarge
   phoneRequiredAck Boolean @default(false) // La tienda confirmó que exige teléfono en el checkout
   carrierActivatedAck Boolean @default(false) // La tienda confirmó que agregó Fium a su zona de envío
   // Última vez que Shopify pidió tarifas a Fium en el checkout. Es la señal de que
