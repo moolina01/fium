@@ -122,7 +122,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       quoteId: quote.id,
       pickupName: config.contactName,
       pickupAddress,
-      pickupPhone: config.phone,
+      // Uber exige E.164; tiendas antiguas pueden tener el teléfono guardado sin formato.
+      pickupPhone: normalizeChileanPhone(config.phone) || config.phone,
       pickupNotes: config.pickupNotes || undefined,
       dropoffName: order.shipping_address.name,
       dropoffAddress,

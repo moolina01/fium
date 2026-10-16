@@ -6,6 +6,7 @@ import { authenticate, registerCarrierService } from "../shopify.server";
 import db from "../db.server";
 import { REGIONES, REGIONES_COMUNAS } from "../data/chile";
 import { getSetupChecklist } from "../lib/setup.server";
+import { normalizeChileanPhone } from "../lib/phone";
 import { saveUberCredentials } from "../lib/uber-credentials.server";
 import { colors as F, FONT, DISPLAY_FONT } from "../lib/theme";
 import { CountUp } from "../components/CountUp";
@@ -116,7 +117,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const data = {
     shop: session.shop,
     contactName: formData.get("contactName") as string,
-    phone: formData.get("phone") as string,
+    // Se guarda en E.164 (+569XXXXXXXX), el formato que exige Uber.
+    phone: normalizeChileanPhone(formData.get("phone") as string) ?? "",
     address: formData.get("address") as string,
     pickupNotes: (formData.get("pickupNotes") as string) || null,
     region: formData.get("region") as string,
@@ -124,6 +126,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     zipCode: formData.get("zipCode") as string,
   };
   const missing = Object.entries(data).filter(([k, v]) => k !== "shop" && k !== "pickupNotes" && !v);
+  if (formData.get("phone") && !data.phone) return { error: "Teléfono inválido. Usa un celular chileno, ej: +56 9 1234 5678.", intent };
   if (missing.length > 0) return { error: "Completa todos los campos para continuar.", intent };
   await db.storeConfig.create({ data });
   return { success: true, intent };

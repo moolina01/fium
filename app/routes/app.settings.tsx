@@ -8,6 +8,7 @@ import { isCarrierRegistered } from "../lib/setup.server";
 import { saveUberCredentials } from "../lib/uber-credentials.server";
 import { PACKAGE_SIZES, toPackageSize } from "../lib/package-size";
 import { FONT } from "../lib/theme";
+import { normalizeChileanPhone } from "../lib/phone";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -35,7 +36,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const data = {
       shop: session.shop,
       contactName: formData.get("contactName") as string,
-      phone: formData.get("phone") as string,
+      // Se guarda en E.164 (+569XXXXXXXX), el formato que exige Uber.
+      phone: normalizeChileanPhone(formData.get("phone") as string) ?? "",
       address: formData.get("address") as string,
       region: formData.get("region") as string,
       comuna: formData.get("comuna") as string,
@@ -44,6 +46,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       packageSize: toPackageSize(formData.get("packageSize")),
     };
     const missing = Object.entries(data).filter(([k, v]) => k !== "shop" && k !== "pickupNotes" && !v);
+    if (formData.get("phone") && !data.phone) return { error: "Teléfono inválido. Usa un celular chileno, ej: +56 9 1234 5678.", intent };
     if (missing.length > 0) return { error: "Completa todos los campos.", intent };
     await db.storeConfig.upsert({ where: { shop: session.shop }, update: data, create: data });
     return { success: "Dirección actualizada correctamente.", intent };

@@ -155,13 +155,15 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     });
   // Robo-courier de Uber (sandbox) SOLO para la tienda de review de Shopify.
   const testMode = isUberTestShop(session.shop);
+  // Uber exige E.164; tiendas antiguas pueden tener el teléfono guardado sin formato.
+  const pickupPhone = normalizeChileanPhone(storeConfig.phone) || storeConfig.phone;
 
   let activeQuoteId = quoteId;
   let delivery;
   try {
     delivery = await createDelivery(creds, {
       quoteId: activeQuoteId,
-      pickupName: storeConfig.contactName, pickupAddress, pickupPhone: storeConfig.phone, pickupNotes,
+      pickupName: storeConfig.contactName, pickupAddress, pickupPhone, pickupNotes,
       dropoffName: order.shippingAddress.name, dropoffAddress, dropoffPhone, dropoffNotes, manifestItems, testMode,
     });
   } catch (e) {
@@ -172,7 +174,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         const freshQuote = await getDeliveryQuote(creds, { pickupAddress, dropoffAddress });
         delivery = await createDelivery(creds, {
           quoteId: freshQuote.id,
-          pickupName: storeConfig.contactName, pickupAddress, pickupPhone: storeConfig.phone, pickupNotes,
+          pickupName: storeConfig.contactName, pickupAddress, pickupPhone, pickupNotes,
           dropoffName: order.shippingAddress.name, dropoffAddress, dropoffPhone, dropoffNotes, manifestItems, testMode,
         });
       } catch (e2) {
