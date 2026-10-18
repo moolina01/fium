@@ -5,7 +5,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getDeliveryQuote, createDelivery, uberCredsFromConfig } from "../services/uber-direct.server";
-import { PACKAGE_SIZES, toPackageSize, sizeFromGrams, formatKg } from "../lib/package-size";
+import { PACKAGE_SIZES, toPackageSize, sizeFromGrams, formatKg, effectiveSize, CAR_ONLY_SIZE, VEHICLE_LABEL } from "../lib/package-size";
 import { normalizeChileanPhone } from "../lib/phone";
 import { fulfillOrderWithTracking } from "../lib/fulfillment.server";
 import { isUberTestShop } from "../lib/test-shops.server";
@@ -162,7 +162,10 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const manualPhone = formData.get("manualPhone") as string;
   const dropoffNotes = ((formData.get("dropoffNotes") as string) || "").trim() || undefined;
   const pickupNotes = storeConfig.pickupNotes || undefined;
-  const packageSize = toPackageSize(formData.get("packageSize") || sizeFromGrams(orderWeightGrams(order)) || storeConfig.packageSize);
+  const packageSize = effectiveSize(
+    toPackageSize(formData.get("packageSize") || sizeFromGrams(orderWeightGrams(order)) || storeConfig.packageSize),
+    storeConfig.carOnly
+  );
   // Último respaldo: el teléfono de la tienda, para que aunque el merchant
   // borre el campo manual, Uber igual reciba un teléfono y pueda despachar.
   const dropoffPhone =
@@ -249,7 +252,11 @@ export default function OrderDetail() {
   // (Uber lo necesita sí o sí). El merchant puede cambiarlo antes de despachar.
   const [manualPhone, setManualPhone] = useState(customerPhone ? "" : (storePhone ?? ""));
   // Pre-seleccionado según el peso del pedido; el merchant puede cambiarlo.
-  const [packageSize, setPackageSize] = useState<string>(suggestedSize ?? storeConfig.packageSize ?? "medium");
+  // Con "Siempre auto" queda fijo en Extra grande (el único que asegura auto).
+  const carOnly = storeConfig.carOnly;
+  const [packageSize, setPackageSize] = useState<string>(
+    carOnly ? CAR_ONLY_SIZE : suggestedSize ?? storeConfig.packageSize ?? "medium"
+  );
   const effectivePhone = customerPhone || manualPhone;
   const canSubmit = !!effectivePhone && !!quote;
 
@@ -399,18 +406,21 @@ export default function OrderDetail() {
             >
               {PACKAGE_SIZES.map((s) => {
                 const selected = packageSize === s.value;
-                const suggested = suggestedSize === s.value;
-                const VehicleIcon = s.vehicle === "auto" ? Car : Bike;
+                const suggested = !carOnly && suggestedSize === s.value;
+                const locked = carOnly && s.value !== CAR_ONLY_SIZE;
+                const VehicleIcon = s.vehicle === "moto" ? Bike : Car;
                 return (
                   <button
                     key={s.value}
                     type="button"
                     role="radio"
                     aria-checked={selected}
+                    disabled={locked}
                     onClick={() => setPackageSize(s.value)}
-                    title={s.hint}
+                    title={locked ? "Tu tienda envía siempre en auto" : s.hint}
                     style={{
-                      position: "relative", textAlign: "left", cursor: "pointer",
+                      position: "relative", textAlign: "left", cursor: locked ? "not-allowed" : "pointer",
+                      opacity: locked ? 0.45 : 1,
                       padding: "12px", borderRadius: "10px", fontFamily: FONT,
                       border: `1.5px solid ${selected ? F.brand : F.border}`,
                       background: selected ? F.brandTint : F.surface,
@@ -431,7 +441,7 @@ export default function OrderDetail() {
                     <span style={{ fontSize: "12px", color: F.muted }}>Hasta {s.maxKg} kg</span>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px", color: F.muted }}>
                       <VehicleIcon size={14} strokeWidth={1.75} aria-hidden="true" />
-                      {s.vehicle === "auto" ? "Auto" : "Moto"}
+                      {VEHICLE_LABEL[s.vehicle]}
                     </span>
                     {suggested && (
                       <span style={{
@@ -446,10 +456,12 @@ export default function OrderDetail() {
               })}
             </div>
             <div style={{ fontSize: "12px", color: F.muted, marginTop: "10px", lineHeight: 1.6 }}>
-              {totalGrams > 0
+              {carOnly
+                ? <>Tu tienda está configurada para enviar <strong style={{ color: F.ink, fontWeight: 600 }}>siempre en auto</strong>, así que el pedido va como Extra grande. Puedes cambiarlo en Configuración → Vehículo para tus envíos.</>
+                : totalGrams > 0
                 ? <>Sugerimos el tamaño según el peso total del pedido. Si el paquete es más voluminoso que pesado, elige uno más grande.</>
                 : <>Los productos no tienen peso cargado en Shopify, así que no podemos sugerir un tamaño. Elígelo a mano.</>}
-              {" "}Uber Direct usa el tamaño para asignar el vehículo.
+              {!carOnly && <>{" "}Uber Direct usa el tamaño para asignar el vehículo; solo Extra grande asegura un auto.</>}
             </div>
           </div>
         </div>

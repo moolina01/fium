@@ -8,13 +8,24 @@ export const PACKAGE_SIZES: {
   label: string;
   hint: string;
   maxKg: number;            // Tope de peso del tamaño (coincide con SIZE_BY_MAX_GRAMS)
-  vehicle: "moto" | "auto"; // Vehículo que Uber suele asignar para ese tamaño
+  vehicle: "moto" | "moto-auto" | "auto"; // Vehículo que puede asignar Uber
 }[] = [
-  { value: "small", label: "Pequeño", hint: "Hasta 2 kg — sobre, 1 producto chico", maxKg: 2, vehicle: "moto" },
-  { value: "medium", label: "Mediano", hint: "Hasta 7 kg — cabe en mochila de moto", maxKg: 7, vehicle: "moto" },
-  { value: "large", label: "Grande", hint: "Hasta 12 kg — varios productos, requiere auto", maxKg: 12, vehicle: "auto" },
-  { value: "xlarge", label: "Extra grande", hint: "Hasta 20 kg — pedido pesado o voluminoso, requiere auto", maxKg: 20, vehicle: "auto" },
+  { value: "small", label: "Pequeño", hint: "Hasta 2 kg — se lleva con una mano", maxKg: 2, vehicle: "moto" },
+  { value: "medium", label: "Mediano", hint: "Hasta 7 kg — cabe en una bolsa", maxKg: 7, vehicle: "moto" },
+  { value: "large", label: "Grande", hint: "Hasta 12 kg — se lleva con las dos manos", maxKg: 12, vehicle: "moto-auto" },
+  { value: "xlarge", label: "Extra grande", hint: "Hasta 20 kg — Uber asigna siempre auto", maxKg: 20, vehicle: "auto" },
 ];
+
+// Según la guía de tamaños de Uber Direct, solo "xlarge" exige auto ("Specifying
+// extra large items will require a car"); para los demás Uber elige el vehículo.
+export const CAR_ONLY_SIZE: PackageSize = "xlarge";
+
+export const VEHICLE_LABEL = { moto: "Moto", "moto-auto": "Moto o auto", auto: "Auto" } as const;
+
+/** Tamaño que se le manda a Uber: con "Siempre auto" activo, siempre Extra grande. */
+export function effectiveSize(size: PackageSize, carOnly: boolean): PackageSize {
+  return carOnly ? CAR_ONLY_SIZE : size;
+}
 
 const VALID = new Set(PACKAGE_SIZES.map((s) => s.value));
 

@@ -66,6 +66,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { success: "Cuenta de Uber Direct conectada correctamente.", intent };
   }
 
+  if (intent === "vehicle") {
+    const carOnly = formData.get("carOnly") === "true";
+    await db.storeConfig.update({ where: { shop: session.shop }, data: { carOnly } });
+    return { success: carOnly ? "Listo: tus envíos se pedirán siempre en auto." : "Listo: el vehículo se elegirá según el peso del pedido.", intent };
+  }
+
   if (intent === "dispatch") {
     const autoDispatch = formData.get("autoDispatch") === "true";
     await db.storeConfig.update({
@@ -423,6 +429,58 @@ export default function Settings() {
               <Btn type="submit" disabled={saving}>{saving ? "Guardando..." : "Guardar cambios"}</Btn>
             </div>
           </Form>
+        </Section>
+
+        <Section
+          title="Vehículo para tus envíos"
+          description="Qué tipo de vehículo le pide Fium a Uber"
+        >
+          {actionData?.intent === "vehicle" && actionData?.success && <Alert type="success">{actionData?.success}</Alert>}
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            {([
+              { value: "false", label: "Según el peso del pedido", badge: "Recomendado", desc: "Pedidos livianos pueden ir en moto (más rápido); los de más de 12 kg van en auto." },
+              { value: "true",  label: "Siempre auto", badge: null, desc: "Todos los pedidos se piden en auto, aunque pesen poco. Ideal si vendes productos pesados o voluminosos." },
+            ] as const).map((opt) => {
+              const isSelected = String(config?.carOnly ?? false) === opt.value;
+              return (
+                <Form key={opt.value} method="post">
+                  <input type="hidden" name="intent" value="vehicle" />
+                  <input type="hidden" name="carOnly" value={opt.value} />
+                  <button type="submit" aria-pressed={isSelected} style={{
+                    width: "100%", textAlign: "left", cursor: "pointer",
+                    background: isSelected ? "#fafafe" : "white",
+                    border: `1.5px solid ${isSelected ? "#4B2BE0" : "#e5e7eb"}`,
+                    borderRadius: "8px", padding: "14px 16px",
+                    display: "flex", alignItems: "center", justifyContent: "space-between",
+                    gap: "12px", ...F,
+                  }}>
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "14px", fontWeight: "600", color: "#111827", marginBottom: "2px" }}>
+                        {opt.label}
+                        {opt.badge && (
+                          <span style={{ fontSize: "11px", fontWeight: 600, color: "#4B2BE0", background: "#EEEDFE", borderRadius: "99px", padding: "1px 8px" }}>
+                            {opt.badge}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: "13px", color: "#6b7280" }}>{opt.desc}</div>
+                    </div>
+                    <div style={{
+                      width: "18px", height: "18px", borderRadius: "50%", flexShrink: 0,
+                      border: `2px solid ${isSelected ? "#4B2BE0" : "#d1d5db"}`,
+                      background: isSelected ? "#4B2BE0" : "white",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                    }}>
+                      {isSelected && <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: "white" }} />}
+                    </div>
+                  </button>
+                </Form>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: "12px", color: "#9ca3af", marginTop: "10px", lineHeight: 1.5 }}>
+            Uber solo asegura un auto cuando el paquete se marca como Extra grande, así que con “Siempre auto” Fium marca todos los pedidos así. El precio que ve tu cliente en el checkout no cambia.
+          </div>
         </Section>
 
         {/* 4. Modo de despacho — OCULTO temporalmente: aún no lanzamos la elección

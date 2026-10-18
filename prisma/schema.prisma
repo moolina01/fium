@@ -54,6 +54,9 @@ model StoreConfig {
   // webhook quedó bien creado en el dashboard de Uber Direct.
   lastUberWebhookAt DateTime?
   autoDispatch   Boolean  @default(false)
+  // "Siempre auto": todos los envíos se piden como Extra grande, el único tamaño
+  // con el que Uber asegura un auto (ver app/lib/package-size.ts).
+  carOnly        Boolean  @default(false)
   // Credenciales de Uber Direct propias de cada tienda. Cada cliente conecta su
   // cuenta (con su tarjeta) y paga sus envíos directo a Uber. El client_secret se
   // guarda cifrado (AES-256-GCM, ver app/lib/crypto.server.ts).

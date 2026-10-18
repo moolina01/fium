@@ -3,7 +3,7 @@ import type { ActionFunctionArgs } from "react-router";
 import db from "../db.server";
 import { getDeliveryQuote, createDelivery, uberCredsFromConfig, describeUberError } from "../services/uber-direct.server";
 import { logError, logInfo } from "../lib/logger.server";
-import { toPackageSize, sizeFromGrams } from "../lib/package-size";
+import { toPackageSize, sizeFromGrams, effectiveSize } from "../lib/package-size";
 import { normalizeChileanPhone } from "../lib/phone";
 import { fulfillOrderWithTracking } from "../lib/fulfillment.server";
 import { isUberTestShop } from "../lib/test-shops.server";
@@ -132,7 +132,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // Tamaño según el peso total del pedido (Uber lo usa para elegir vehículo).
     // Sin peso cargado, se usa el tamaño por defecto de la tienda.
     const totalGrams = manifestLines.reduce((sum, l) => sum + l.grams * l.quantity, 0);
-    const packageSize = sizeFromGrams(totalGrams) ?? toPackageSize(config.packageSize);
+    const packageSize = effectiveSize(sizeFromGrams(totalGrams) ?? toPackageSize(config.packageSize), config.carOnly);
     const manifest = buildManifest(manifestLines, packageSize);
 
     const delivery = await createDelivery(creds, {
