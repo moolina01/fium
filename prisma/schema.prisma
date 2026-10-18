@@ -95,6 +95,20 @@ model Delivery {
   @@unique([shop, orderId])
 }
 
+// Pedidos que la tienda marcó como "No gestionar": Fium no los despacha y dejan
+// de aparecer en "Por despachar" (ej. se canceló, se entrega de otra forma o
+// hubo un problema). Se pueden volver a gestionar desde el panel.
+model DismissedOrder {
+  id           String   @id @default(cuid())
+  shop         String
+  orderId      String   // GID de la orden en Shopify
+  orderNumber  String
+  customerName String
+  createdAt    DateTime @default(now())
+
+  @@unique([shop, orderId])
+}
+
 // Token OAuth de Uber Direct, uno por cuenta de tienda (clave = clientId de esa
 // tienda). Se persiste para que sobreviva reinicios/serverless — Uber limita la
 // generación de tokens a 100/hora, así que nunca se genera por request.

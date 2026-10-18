@@ -28,6 +28,13 @@ type Order = {
   failureReason: string | null;
 };
 
+type DismissedOrderRow = {
+  orderId: string; // GID
+  orderNumber: string;
+  customerName: string;
+  timeAgo: string; // cuándo se marcó como "No gestionar"
+};
+
 type DeliveryBase = {
   id: string;
   orderNumber: string;
@@ -159,6 +166,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     deliveries = await db.delivery.findMany({ where: { shop: session.shop } });
   }
 
+  // Pedidos que la tienda marcó como "No gestionar": no aparecen en "Por despachar"
+  // ni cuentan como problema.
+  const dismissed = await db.dismissedOrder.findMany({
+    where: { shop: session.shop },
+    orderBy: { createdAt: "desc" },
+  });
+  const dismissedOrderIds = new Set(dismissed.map((d) => d.orderId));
+
   // failed se excluye: la orden debe reaparecer en "Por despachar" para despacho manual
   const deliveredOrderIds = new Set(
     deliveries.filter((d: any) => d.status !== "failed").map((d: any) => d.orderId)
@@ -175,18 +190,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const todayStr = new Date().toDateString();
 
   // Órdenes Shopify sin delivery creado aún (+ las que fallaron en auto-dispatch).
-  // Se ordenan de más antigua a más nueva: son las que primero hay que despachar
-  // para no comerse el margen de la promesa de entrega bajo 60 min.
+  // Más nuevas primero; las que llevan rato esperando se marcan con el punto de urgencia.
   const pendingOrders: Order[] = raw
     .filter((e: any) =>
       e.node.shippingLines.edges.some((s: any) => {
         const title = s.node.title.toLowerCase();
-        return (title.includes("uber") || title.includes("fium")) && !deliveredOrderIds.has(e.node.id);
+        return (title.includes("uber") || title.includes("fium")) &&
+          !deliveredOrderIds.has(e.node.id) && !dismissedOrderIds.has(e.node.id);
       })
     )
     .sort(
       (a: { node: { createdAt: string } }, b: { node: { createdAt: string } }) =>
-        new Date(a.node.createdAt).getTime() - new Date(b.node.createdAt).getTime()
+        new Date(b.node.createdAt).getTime() - new Date(a.node.createdAt).getTime()
     )
     .map((e: any) => ({
       id: e.node.id,
@@ -199,6 +214,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       city: e.node.shippingAddress?.city ?? "",
       autoDispatchFailed: failedOrderIds.has(e.node.id),
       failureReason: failureReasonByOrderId.get(e.node.id) ?? null,
+    }));
+
+  // Solo los no gestionados que siguen abiertos en Shopify (últimos 30 días), para
+  // poder volver a gestionarlos; los ya preparados o cerrados no hace falta mostrarlos.
+  const openOrderIds = new Set(raw.map((e: any) => e.node.id as string));
+  const dismissedOrders: DismissedOrderRow[] = dismissed
+    .filter((d) => openOrderIds.has(d.orderId))
+    .map((d) => ({
+      orderId: d.orderId,
+      orderNumber: d.orderNumber,
+      customerName: d.customerName,
+      timeAgo: calcTimeAgo(d.createdAt.toString()),
     }));
 
   // Deliveries activos — excluye failed (ya aparecen en "Por despachar")
@@ -241,6 +268,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     hasConfig: true,
     pendingOrders,
+    dismissedOrders,
     activeDeliveries,
     history,
     active: deliveries.filter((d: any) =>
@@ -249,7 +277,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     delivered: deliveries.filter(
       (d: any) => d.status === "delivered" && new Date(d.createdAt).toDateString() === todayStr
     ).length,
-    issues: deliveries.filter((d: any) => d.status === "failed").length,
+    issues: deliveries.filter((d: any) => d.status === "failed" && !dismissedOrderIds.has(d.orderId)).length,
     setup,
   };
 };
@@ -285,6 +313,30 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       logError("dashboard/register-carrier", e, { shop: session.shop });
       return { error: "Error al activar Fium en el checkout. Intenta de nuevo." };
     }
+  }
+
+  if (intent === "dismiss_order" || intent === "restore_order") {
+    const orderId = (formData.get("orderId") as string) || "";
+    if (!orderId.startsWith("gid://shopify/Order/")) return { error: "Pedido inválido." };
+    if (intent === "restore_order") {
+      await db.dismissedOrder.deleteMany({ where: { shop: session.shop, orderId } });
+      return { ok: true };
+    }
+    // Un pedido con un envío vivo en Uber no se puede soltar: primero hay que cancelarlo.
+    const live = await db.delivery.findFirst({
+      where: { shop: session.shop, orderId, status: { notIn: ["failed", "canceled"] } },
+    });
+    if (live) return { error: "Este pedido ya tiene un envío con Uber. Cancélalo primero desde \"En curso\"." };
+    const data = {
+      orderNumber: ((formData.get("orderNumber") as string) || "").slice(0, 50),
+      customerName: ((formData.get("customerName") as string) || "").slice(0, 200),
+    };
+    await db.dismissedOrder.upsert({
+      where: { shop_orderId: { shop: session.shop, orderId } },
+      create: { shop: session.shop, orderId, ...data },
+      update: data,
+    });
+    return { ok: true };
   }
 
   if (intent === "cancel_delivery") {
@@ -333,6 +385,19 @@ const GLOBAL_CSS = `
 .fu-btn { transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease; }
 .fu-btn:hover { transform: translateY(-1px); filter: brightness(1.06); }
 .fu-tab:hover { color: #4B2BE0; }
+.fu-ghost-btn {
+  padding: 6px 10px; border: none; background: transparent; border-radius: 6px;
+  font-size: 12px; font-weight: 600; color: #6b7280; cursor: pointer; white-space: nowrap;
+  font-family: inherit; transition: background 0.15s ease, color 0.15s ease;
+}
+.fu-ghost-btn:hover { background: #f3f4f6; color: #111827; }
+.fu-ghost-btn.fu-ghost-brand { color: #4B2BE0; }
+.fu-ghost-btn.fu-ghost-brand:hover { background: #EEEDFE; color: #4B2BE0; }
+@keyframes fuModalIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes fuOverlayIn { from { opacity: 0; } to { opacity: 1; } }
 .fu-tile { cursor: pointer; transition: background 0.15s ease; text-align: left; border: none; }
 .fu-tile:hover { background: #fafafb; }
 @keyframes fuJustDispatched {
@@ -396,11 +461,45 @@ export default function Index() {
   // directo a "esos" pedidos en vez de tener que buscarlos a mano en la tabla.
   const [pendingFilter, setPendingFilter] = useState<"all" | "problems">("all");
   const [historyFilter, setHistoryFilter] = useState<"all" | "today">("all");
-  const { pendingOrders, activeDeliveries, history, active, delivered, issues, setup } = data;
+  const { pendingOrders, dismissedOrders, activeDeliveries, history, active, delivered, issues, setup } = data;
 
+  // "No gestionar": se pide confirmación y la fila se oculta al tiro (optimista)
+  // mientras el servidor lo guarda.
+  const [confirmDismiss, setConfirmDismiss] = useState<Order | null>(null);
+  const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
+  const dismissFetcher = useFetcher<{ ok?: boolean; error?: string }>();
+  const restoreFetcher = useFetcher<{ ok?: boolean; error?: string }>();
+  function dismissOrder(order: Order) {
+    setConfirmDismiss(null);
+    setHiddenIds((prev) => new Set(prev).add(order.id));
+    dismissFetcher.submit(
+      { intent: "dismiss_order", orderId: order.id, orderNumber: order.name, customerName: order.customerName },
+      { method: "post" }
+    );
+    showToast(`Pedido ${order.name} ya no se gestiona con Fium`, {
+      action: "Deshacer",
+      onAction: () => restoreOrder(order.id),
+    });
+  }
+  function restoreOrder(orderId: string) {
+    setHiddenIds((prev) => {
+      const next = new Set(prev);
+      next.delete(orderId);
+      return next;
+    });
+    restoreFetcher.submit({ intent: "restore_order", orderId }, { method: "post" });
+  }
+  useEffect(() => {
+    if (dismissFetcher.state !== "idle" || !dismissFetcher.data?.error) return;
+    // Falló en el servidor: la fila vuelve a aparecer.
+    setHiddenIds(new Set());
+    showToast(dismissFetcher.data.error, { isError: true });
+  }, [dismissFetcher.state, dismissFetcher.data]);
+
+  const managedPendingOrders = pendingOrders.filter((o) => !hiddenIds.has(o.id));
   const visiblePendingOrders = pendingFilter === "problems"
-    ? pendingOrders.filter((o) => o.autoDispatchFailed)
-    : pendingOrders;
+    ? managedPendingOrders.filter((o) => o.autoDispatchFailed)
+    : managedPendingOrders;
   const visibleHistory = historyFilter === "today"
     ? history.filter((d) => d.isDeliveredToday)
     : history;
@@ -560,7 +659,7 @@ export default function Index() {
         {/* Tabs */}
         <div style={{ display: "flex", borderBottom: "1px solid #e5e7eb", marginBottom: "0", ...T }}>
           {([
-            { key: "pending",   label: "Por despachar", count: pendingOrders.length },
+            { key: "pending",   label: "Por despachar", count: managedPendingOrders.length },
             { key: "confirmed", label: "En curso",      count: activeDeliveries.length },
             { key: "history",   label: "Historial",     count: history.length },
           ] as const).map(({ key, label, count }) => (
@@ -607,7 +706,10 @@ export default function Index() {
                       ? "Ningún pedido está fallando el auto-despacho en este momento."
                       : "Cuando un cliente elija Fium en el checkout, su pedido aparecerá aquí listo para despachar con un clic."}
                   />
-                : <OrderTable orders={visiblePendingOrders} />}
+                : <OrderTable orders={visiblePendingOrders} onDismiss={setConfirmDismiss} />}
+              {pendingFilter === "all" && (
+                <DismissedList orders={dismissedOrders} onRestore={restoreOrder} />
+              )}
             </>
           )}
           {tab === "confirmed" && (
@@ -642,8 +744,22 @@ export default function Index() {
           )}
         </div>
       </s-section>
+
+      {confirmDismiss && (
+        <ConfirmDismissModal
+          order={confirmDismiss}
+          onCancel={() => setConfirmDismiss(null)}
+          onConfirm={() => dismissOrder(confirmDismiss)}
+        />
+      )}
     </s-page>
   );
+}
+
+type ToastOptions = { action?: string; onAction?: () => void; isError?: boolean; duration?: number };
+function showToast(message: string, options?: ToastOptions) {
+  (window as { shopify?: { toast?: { show: (m: string, o?: ToastOptions) => void } } })
+    .shopify?.toast?.show(message, options);
 }
 
 function FilterBanner({ text, onClear }: { text: string; onClear: () => void }) {
@@ -753,11 +869,15 @@ function SetupBanner({ setup }: { setup: SetupChecklist }) {
   );
 }
 
-function OrderTable({ orders }: { orders: Order[] }) {
+// Columna de acciones de ancho fijo: así "Reintentar envío" (más corto) no corre
+// las demás columnas.
+const ORDER_COLUMNS = "1fr 1fr 1fr 250px";
+
+function OrderTable({ orders, onDismiss }: { orders: Order[]; onDismiss: (order: Order) => void }) {
   return (
     <div style={{ ...T }}>
       <div style={{
-        display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto",
+        display: "grid", gridTemplateColumns: ORDER_COLUMNS,
         padding: "8px 16px", borderBottom: "1px solid #f3f4f6",
       }}>
         {["Orden", "Cliente", "Dirección", ""].map((h) => (
@@ -774,7 +894,7 @@ function OrderTable({ orders }: { orders: Order[] }) {
           ...fu(Math.min(i, 8) * 35),
         }}>
           <div style={{
-            display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto",
+            display: "grid", gridTemplateColumns: ORDER_COLUMNS,
             alignItems: "center", padding: "13px 16px",
           }}>
             <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
@@ -789,7 +909,15 @@ function OrderTable({ orders }: { orders: Order[] }) {
             </div>
             <div style={{ fontSize: "13px", color: "#374151" }}>{order.customerName}</div>
             <div style={{ fontSize: "13px", color: "#6b7280" }}>{order.address}, {order.city}</div>
-            <div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "4px" }}>
+              <button
+                type="button"
+                className="fu-ghost-btn"
+                onClick={() => onDismiss(order)}
+                title="Fium deja de gestionar este pedido"
+              >
+                No gestionar
+              </button>
               <Link
                 to={`/app/orders/${order.orderId}`}
                 className="fu-btn"
@@ -820,6 +948,122 @@ function OrderTable({ orders }: { orders: Order[] }) {
         </div>
         );
       })}
+    </div>
+  );
+}
+
+function ConfirmDismissModal({ order, onCancel, onConfirm }: { order: Order; onCancel: () => void; onConfirm: () => void }) {
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    confirmRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onCancel(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 1000,
+      display: "flex", alignItems: "center", justifyContent: "center", padding: "16px", ...T,
+    }}>
+      <button
+        type="button"
+        aria-label="Cerrar"
+        tabIndex={-1}
+        onClick={onCancel}
+        style={{
+          position: "absolute", inset: 0, border: "none", padding: 0, cursor: "default",
+          background: "rgba(17,24,39,0.45)", animation: "fuOverlayIn 0.15s ease-out both",
+        }}
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="fu-dismiss-title"
+        style={{
+          position: "relative", width: "100%", maxWidth: "440px", background: "white", borderRadius: "12px",
+          boxShadow: "0 20px 50px rgba(17,24,39,0.25)", overflow: "hidden",
+          animation: "fuModalIn 0.2s cubic-bezier(0.22,1,0.36,1) both",
+        }}
+      >
+        <div style={{ padding: "20px 22px 4px" }}>
+          <div id="fu-dismiss-title" style={{ fontSize: "16px", fontWeight: 700, color: "#111827" }}>
+            ¿Dejar de gestionar el pedido {order.name}?
+          </div>
+          <div style={{ fontSize: "13px", color: "#6b7280", marginTop: "4px" }}>
+            {order.customerName}{order.address ? ` · ${order.address}, ${order.city}` : ""}
+          </div>
+        </div>
+        <div style={{ padding: "12px 22px 0", fontSize: "13px", color: "#374151", lineHeight: 1.55 }}>
+          Fium no va a despachar este pedido con Uber y saldrá de “Por despachar”. Úsalo si el pedido se canceló,
+          lo vas a entregar de otra forma o tuvo algún problema.
+        </div>
+        <div style={{
+          margin: "14px 22px 0", padding: "10px 12px", borderRadius: "8px",
+          background: "#FFFBEB", border: "1px solid #FDE68A",
+          fontSize: "12px", color: "#92400E", lineHeight: 1.5,
+        }}>
+          El cliente pagó el envío Fium en el checkout. Si no le vas a entregar el pedido, gestiona la entrega
+          o el reembolso desde el pedido en Shopify.
+        </div>
+        <div style={{ fontSize: "12px", color: "#9ca3af", padding: "10px 22px 0" }}>
+          Podrás volver a gestionarlo desde “Pedidos no gestionados”.
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", padding: "18px 22px 20px" }}>
+          <button type="button" className="fu-ghost-btn" onClick={onCancel} style={{ padding: "8px 14px", fontSize: "13px" }}>
+            Cancelar
+          </button>
+          <button
+            type="button"
+            className="fu-btn"
+            onClick={onConfirm}
+            ref={confirmRef}
+            style={{
+              padding: "8px 16px", border: "none", borderRadius: "6px", cursor: "pointer",
+              background: "#DC2626", color: "white", fontSize: "13px", fontWeight: 600, fontFamily: "inherit",
+            }}
+          >
+            No gestionar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DismissedList({ orders, onRestore }: { orders: DismissedOrderRow[]; onRestore: (orderId: string) => void }) {
+  const [open, setOpen] = useState(false);
+  if (orders.length === 0) return null;
+  return (
+    <div style={{ borderTop: "1px solid #f3f4f6", ...T }}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        style={{
+          display: "flex", alignItems: "center", gap: "6px", width: "100%",
+          padding: "12px 16px", border: "none", background: "transparent", cursor: "pointer",
+          fontSize: "12px", fontWeight: 600, color: "#6b7280", fontFamily: "inherit", textAlign: "left",
+        }}
+      >
+        <ChevronRight size={14} style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s ease" }} />
+        Pedidos no gestionados ({orders.length})
+      </button>
+      {open && orders.map((o, i) => (
+        <div key={o.orderId} className="fu-row" style={{
+          display: "grid", gridTemplateColumns: ORDER_COLUMNS, alignItems: "center",
+          padding: "10px 16px", borderBottom: "1px solid #f9fafb", ...fu(Math.min(i, 8) * 30, 220),
+        }}>
+          <div style={{ fontSize: "13px", fontWeight: 600, color: "#9ca3af" }}>{o.orderNumber}</div>
+          <div style={{ fontSize: "13px", color: "#9ca3af" }}>{o.customerName}</div>
+          <div style={{ fontSize: "12px", color: "#9ca3af" }}>No gestionado {o.timeAgo}</div>
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <button type="button" className="fu-ghost-btn fu-ghost-brand" onClick={() => onRestore(o.orderId)}>
+              Volver a gestionar
+            </button>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
