@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { Link, useActionData, useFetcher, useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -5,7 +6,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getDelivery, cancelDelivery, getStoreUberCreds } from "../services/uber-direct.server";
 import { logError } from "../lib/logger.server";
-import { applyUberStatus, UBER_CANCELED_REASON } from "../lib/delivery-status.server";
+import { applyUberStatus, describeVehicle, UBER_CANCELED_REASON } from "../lib/delivery-status.server";
 import { colors as F, FONT, DISPLAY_FONT } from "../lib/theme";
 
 function formatEta(iso: string | null | undefined) {
@@ -62,13 +63,24 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       quoteAmount: delivery.quoteAmount,
       failureReason: delivery.failureReason,
       createdAt: delivery.createdAt.toISOString(),
+      // Para un envío terminado, la última actualización es cuándo terminó.
+      finishedAt: isTerminal || ["delivered", "canceled", "returned"].includes(delivery.status)
+        ? delivery.updatedAt.toISOString()
+        : null,
     },
+    // Link al pedido en el admin de Shopify (dominio .myshopify.com, siempre válido).
+    adminOrderUrl: `https://${session.shop}/admin/orders/${delivery.orderId.split("/").pop()}`,
     storeConfig: storeConfig
       ? { contactName: storeConfig.contactName, address: storeConfig.address, comuna: storeConfig.comuna }
       : null,
-    pickupEta: formatEta(live?.pickupEta),
-    dropoffEta: formatEta(live?.dropoffEta),
-    courier: live?.courier ?? null,
+    pickupEta: formatEta(live?.pickupEta ?? delivery.pickupEta?.toISOString()),
+    dropoffEta: formatEta(live?.dropoffEta ?? delivery.dropoffEta?.toISOString()),
+    // En vivo mientras está en curso; para envíos terminados, lo guardado del último sync.
+    courier: live?.courier
+      ? { name: live.courier.name, phone: live.courier.phone, vehicle: describeVehicle(live.courier), imgHref: live.courier.imgHref }
+      : delivery.courierName
+        ? { name: delivery.courierName, phone: delivery.courierPhone ?? "", vehicle: delivery.courierVehicle, imgHref: "" }
+        : null,
     liveError,
   };
 };
@@ -105,6 +117,41 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   return { error: "Acción desconocida." };
 };
 
+const TZ = "America/Santiago";
+
+function clock(iso: string) {
+  return new Date(iso).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: TZ });
+}
+
+function dayLabel(iso: string) {
+  const day = (d: Date) => d.toLocaleDateString("es-CL", { timeZone: TZ });
+  if (day(new Date(iso)) === day(new Date())) return "Hoy";
+  return new Date(iso).toLocaleDateString("es-CL", { day: "numeric", month: "short", timeZone: TZ });
+}
+
+function formatDateTime(iso: string) {
+  return `${dayLabel(iso).toLowerCase()} a las ${clock(iso)}`;
+}
+
+function durationLabel(fromIso: string, toIso: string) {
+  const min = Math.max(0, Math.round((new Date(toIso).getTime() - new Date(fromIso).getTime()) / 60000));
+  return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h ${min % 60} min`;
+}
+
+function formatClp(amount: number) {
+  return `$${Math.round(amount).toLocaleString("es-CL")}`;
+}
+
+function SummaryStat({ label, value, hint }: { label: string; value: string; hint?: string }) {
+  return (
+    <div style={{ padding: "16px 18px", borderRight: `1px solid ${F.border}` }}>
+      <div style={{ fontSize: "12px", color: F.muted, marginBottom: "4px" }}>{label}</div>
+      <div suppressHydrationWarning style={{ fontSize: "20px", fontWeight: 700, color: F.ink, fontFamily: DISPLAY_FONT }}>{value}</div>
+      {hint && <div suppressHydrationWarning style={{ fontSize: "12px", color: F.muted, marginTop: "2px" }}>{hint}</div>}
+    </div>
+  );
+}
+
 const STATUS_MAP: Record<string, { label: string; color: string; description: string }> = {
   pending: { label: "Buscando conductor", color: F.warning, description: "Uber Direct recibió el envío y está asignando un conductor." },
   pickup: { label: "Va a tu tienda", color: "#3B82F6", description: "El conductor va en camino a retirar el pedido. Ten el paquete listo." },
@@ -117,7 +164,17 @@ const STATUS_MAP: Record<string, { label: string; color: string; description: st
 };
 
 export default function DeliveryDetail() {
-  const { delivery, storeConfig, pickupEta, dropoffEta, courier, liveError } = useLoaderData<typeof loader>();
+  const { delivery, storeConfig, pickupEta, dropoffEta, courier, liveError, adminOrderUrl } = useLoaderData<typeof loader>();
+  const isFinished = ["delivered", "canceled", "returned"].includes(delivery.status);
+  // Prueba de entrega (foto o firma): se pide a Uber al abrir el detalle.
+  const proof = useFetcher<{ image?: string; kind?: string; error?: string }>();
+  useEffect(() => {
+    if (delivery.status === "delivered" && proof.state === "idle" && !proof.data) {
+      proof.load(`/app/deliveries/${delivery.id}/proof`);
+    }
+    // Solo al abrir el envío.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [delivery.id, delivery.status]);
   const actionData = useActionData<typeof action>();
   const fetcher = useFetcher<{ error?: string }>();
   const busy = fetcher.state !== "idle";
@@ -153,7 +210,10 @@ export default function DeliveryDetail() {
           <div>
             <div style={{ fontSize: "16px", fontWeight: "700", color: F.ink, fontFamily: DISPLAY_FONT }}>{statusInfo.label}</div>
             {statusInfo.description && (
-              <div style={{ fontSize: "13px", color: F.muted, marginTop: "2px" }}>{statusInfo.description}</div>
+              <div style={{ fontSize: "13px", color: F.muted, marginTop: "2px" }}>
+                {statusInfo.description}
+                {delivery.finishedAt && <> · {formatDateTime(delivery.finishedAt)}</>}
+              </div>
             )}
           </div>
         </div>
@@ -170,8 +230,53 @@ export default function DeliveryDetail() {
           </div>
         )}
 
+        {/* Resumen del envío */}
+        <div style={{ background: F.surface, borderRadius: "12px", border: `1px solid ${F.border}`, overflow: "hidden" }}>
+          <div style={{ padding: "14px 18px", borderBottom: `1px solid ${F.border}`, background: F.bg }}>
+            <span style={{ fontSize: "12px", fontWeight: "700", color: F.muted, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+              Resumen
+            </span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }}>
+            <SummaryStat label="Costo del envío" value={delivery.quoteAmount != null ? formatClp(delivery.quoteAmount) : "—"} hint="Cobrado por Uber Direct" />
+            <SummaryStat label="Despachado" value={clock(delivery.createdAt)} hint={dayLabel(delivery.createdAt)} />
+            <SummaryStat
+              label={delivery.status === "delivered" ? "Entregado" : isFinished ? "Terminó" : "Entrega estimada"}
+              value={delivery.finishedAt ? clock(delivery.finishedAt) : dropoffEta ?? "—"}
+              hint={delivery.finishedAt ? dayLabel(delivery.finishedAt) : "Según Uber"}
+            />
+            {delivery.status === "delivered" && delivery.finishedAt && (
+              <SummaryStat label="Tiempo total" value={durationLabel(delivery.createdAt, delivery.finishedAt)} hint="Desde el despacho" />
+            )}
+          </div>
+        </div>
+
+        {/* Prueba de entrega */}
+        {delivery.status === "delivered" && (
+          <div style={{ background: F.surface, borderRadius: "12px", border: `1px solid ${F.border}`, overflow: "hidden" }}>
+            <div style={{ padding: "14px 18px", borderBottom: `1px solid ${F.border}`, background: F.bg }}>
+              <span style={{ fontSize: "12px", fontWeight: "700", color: F.muted, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                {proof.data?.kind === "signature" ? "Firma de recepción" : "Foto de entrega"}
+              </span>
+            </div>
+            <div style={{ padding: "18px" }}>
+              {proof.data?.image ? (
+                <img
+                  src={proof.data.image}
+                  alt="Prueba de entrega tomada por el conductor"
+                  style={{ maxWidth: "360px", width: "100%", borderRadius: "10px", border: `1px solid ${F.border}`, display: "block" }}
+                />
+              ) : proof.data?.error ? (
+                <div style={{ fontSize: "13px", color: F.muted }}>{proof.data.error}</div>
+              ) : (
+                <div style={{ fontSize: "13px", color: F.muted }}>Cargando la prueba de entrega desde Uber…</div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Retiro y entrega estimados — responde "¿cuándo pasan a buscar el paquete?" */}
-        {(pickupEta || dropoffEta) && (
+        {!isFinished && (pickupEta || dropoffEta) && (
           <div style={{ background: F.surface, borderRadius: "12px", border: `1px solid ${F.border}`, overflow: "hidden" }}>
             <div style={{ padding: "14px 18px", borderBottom: `1px solid ${F.border}`, background: F.bg }}>
               <span style={{ fontSize: "12px", fontWeight: "700", color: F.muted, textTransform: "uppercase", letterSpacing: "0.5px" }}>
@@ -204,7 +309,7 @@ export default function DeliveryDetail() {
           <div style={{ background: F.surface, borderRadius: "12px", border: `1px solid ${F.border}`, overflow: "hidden" }}>
             <div style={{ padding: "14px 18px", borderBottom: `1px solid ${F.border}`, background: F.bg }}>
               <span style={{ fontSize: "12px", fontWeight: "700", color: F.muted, textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                Courier asignado
+                {isFinished ? "Conductor" : "Conductor asignado"}
               </span>
             </div>
             <div style={{ padding: "16px 18px", display: "flex", alignItems: "center", gap: "12px" }}>
@@ -213,7 +318,9 @@ export default function DeliveryDetail() {
               )}
               <div>
                 <div style={{ fontSize: "14px", fontWeight: "600", color: F.ink }}>{courier.name || "Sin nombre"}</div>
-                <div style={{ fontSize: "13px", color: F.muted }}>{courier.vehicleType} {courier.phone && `· ${courier.phone}`}</div>
+                <div style={{ fontSize: "13px", color: F.muted }}>
+                  {[courier.vehicle, courier.phone].filter(Boolean).join(" · ")}
+                </div>
               </div>
             </div>
           </div>
@@ -263,9 +370,21 @@ export default function DeliveryDetail() {
                 borderRadius: "8px", fontSize: "14px", fontWeight: "600", textDecoration: "none", ...font,
               }}
             >
-              Ver tracking en vivo ↗
+              {isFinished ? "Ver tracking de Uber ↗" : "Ver tracking en vivo ↗"}
             </a>
           )}
+          <a
+            href={adminOrderUrl}
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              flex: 1, textAlign: "center", padding: "12px", background: F.surface, color: F.brand,
+              border: `1.5px solid ${F.brand}`, borderRadius: "8px", fontSize: "14px", fontWeight: "600",
+              textDecoration: "none", ...font,
+            }}
+          >
+            Ver pedido en Shopify ↗
+          </a>
           {canCancel && (
             <fetcher.Form method="post" style={{ flex: 1 }}>
               <input type="hidden" name="intent" value="cancel_delivery" />
@@ -285,7 +404,7 @@ export default function DeliveryDetail() {
         </div>
 
         <Link to="/app" style={{ fontSize: "13px", color: F.muted, textDecoration: "none", textAlign: "center" }}>
-          ← Volver a órdenes
+          ← Volver a envíos
         </Link>
       </div>
     </s-page>

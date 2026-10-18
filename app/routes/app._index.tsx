@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { Link, useFetcher, useLoaderData, useRevalidator, useSearchParams } from "react-router";
 import { authenticate, registerCarrierService } from "../shopify.server";
@@ -9,7 +9,7 @@ import { getSetupChecklist, type SetupChecklist } from "../lib/setup.server";
 import { saveUberCredentials } from "../lib/uber-credentials.server";
 import { logError } from "../lib/logger.server";
 import { applyUberStatus } from "../lib/delivery-status.server";
-import { Bike, Car, Motorbike, Phone } from "lucide-react";
+import { Bike, Car, Check, ChevronRight, Motorbike, Phone } from "lucide-react";
 import { FONT } from "../lib/theme";
 import { CountUp } from "../components/CountUp";
 import { UberConnectCard } from "../components/setup/UberConnectCard";
@@ -48,7 +48,10 @@ type ActiveDelivery = DeliveryBase & {
   courierVehicle: string | null;
 };
 
-type HistoryDelivery = DeliveryBase & { isDeliveredToday: boolean };
+type HistoryDelivery = DeliveryBase & {
+  isDeliveredToday: boolean;
+  finishedAt: string; // ISO — última actualización, que para un envío terminado es cuándo terminó
+};
 
 function calcMinutesAgo(dateStr: string) {
   return Math.floor((Date.now() - new Date(dateStr).getTime()) / 60000);
@@ -232,6 +235,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       uberTrackingUrl: d.uberTrackingUrl ?? null,
       timeAgo: calcTimeAgo(d.createdAt.toString()),
       isDeliveredToday: d.status === "delivered" && new Date(d.createdAt).toDateString() === todayStr,
+      finishedAt: d.updatedAt.toISOString(),
     }));
 
   return {
@@ -343,8 +347,37 @@ const GLOBAL_CSS = `
 }
 .fu-just-dispatched { animation: fuJustDispatched 2.8s ease-out 0.25s both; }
 .fu-badge-pop { animation: fuBadgePop 0.45s cubic-bezier(0.22,1,0.36,1) both; }
+/* Barra de progreso: los pasos hechos se llenan una vez; el actual "carga" en bucle. */
+@keyframes fuStepFill {
+  from { transform: scaleX(0); }
+  to   { transform: scaleX(1); }
+}
+@keyframes fuStepLoading {
+  0%   { transform: scaleX(0); opacity: 1; }
+  75%  { transform: scaleX(1); opacity: 1; }
+  100% { transform: scaleX(1); opacity: 0; }
+}
+.fu-step-fill { transform-origin: left center; animation: fuStepFill 0.5s cubic-bezier(0.22,1,0.36,1) both; }
+.fu-step-loading { transform-origin: left center; animation: fuStepLoading 2.2s cubic-bezier(0.45,0,0.25,1) infinite both; }
+/* Envío recién entregado: la tarjeta se despide y la fila del historial destella en verde. */
+@keyframes fuDeliveredOut {
+  0%   { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-6px) scale(0.98); }
+}
+@keyframes fuJustDelivered {
+  0%   { background: #E6F7F2; box-shadow: inset 3px 0 0 #1D9E75; }
+  70%  { background: #E6F7F2; box-shadow: inset 3px 0 0 #1D9E75; }
+  100% { background: #FFFFFF; box-shadow: inset 3px 0 0 transparent; }
+}
+.fu-delivered-out { animation: fuDeliveredOut 0.35s ease-in 1.35s both; }
+.fu-just-delivered { animation: fuJustDelivered 2.8s ease-out 0.2s both; }
+.fu-history-row { cursor: pointer; transition: background 0.15s ease; }
+.fu-history-row:hover { background: #fafafb; }
+.fu-history-row:hover .fu-chevron { transform: translateX(2px); color: #4B2BE0; }
+.fu-chevron { transition: transform 0.15s ease, color 0.15s ease; }
 @media (prefers-reduced-motion: reduce) {
-  .fu-just-dispatched, .fu-badge-pop { animation: none; }
+  .fu-just-dispatched, .fu-badge-pop, .fu-step-fill, .fu-delivered-out, .fu-just-delivered { animation: none; }
+  .fu-step-loading { animation: none; transform: scaleX(0.6); }
 }
 `;
 
@@ -394,6 +427,45 @@ export default function Index() {
     // Solo al llegar con el parámetro.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Envío que acaba de pasar a "Entregado" mientras se miraba "En curso": se
+  // muestra un instante completo y en verde, y luego se pasa al historial.
+  const [deliveredGhost, setDeliveredGhost] = useState<ActiveDelivery | null>(null);
+  const [justDeliveredId, setJustDeliveredId] = useState<string | null>(null);
+  const prevActive = useRef<ActiveDelivery[]>(activeDeliveries);
+  const deliveredTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
+  useEffect(() => {
+    const before = prevActive.current;
+    prevActive.current = activeDeliveries;
+    const stillActive = new Set(activeDeliveries.map((d) => d.id));
+    const delivered = before.find(
+      (d) => !stillActive.has(d.id) && history.some((h) => h.id === d.id && h.status === "delivered")
+    );
+    if (!delivered) return;
+
+    const toast = (window as { shopify?: { toast?: { show: (m: string) => void } } }).shopify?.toast;
+    if (tabRef.current !== "confirmed") {
+      toast?.show(`Pedido ${delivered.orderNumber} entregado`);
+      setJustDeliveredId(delivered.id);
+      return;
+    }
+    setDeliveredGhost({ ...delivered, status: "delivered" });
+    // Timers fuera del ciclo del efecto: si los datos se recargan durante la
+    // animación, igual debe terminar (si no, la tarjeta verde quedaría pegada).
+    deliveredTimers.current.push(
+      setTimeout(() => {
+        setDeliveredGhost(null);
+        setTab("history");
+        setHistoryFilter("all");
+        setJustDeliveredId(delivered.id);
+        toast?.show(`Pedido ${delivered.orderNumber} entregado`);
+      }, 1750),
+      setTimeout(() => setJustDeliveredId(null), 1750 + 3200),
+    );
+  }, [activeDeliveries, history]);
+  useEffect(() => () => deliveredTimers.current.forEach(clearTimeout), []);
 
   // Mientras haya envíos en curso, recargar los datos cada 30 s para que el
   // estado avance solo (el loader consulta a Uber los envíos desactualizados).
@@ -539,12 +611,16 @@ export default function Index() {
             </>
           )}
           {tab === "confirmed" && (
-            activeDeliveries.length === 0
+            activeDeliveries.length === 0 && !deliveredGhost
               ? <EmptyState
                   title="No hay envíos en curso"
                   text="Los envíos que despaches aparecerán aquí con su estado en tiempo real, desde que el courier los retira hasta la entrega."
                 />
-              : <DeliveryTable deliveries={activeDeliveries} highlightId={justDispatchedId} />
+              : <DeliveryTable
+                  deliveries={deliveredGhost ? [deliveredGhost, ...activeDeliveries] : activeDeliveries}
+                  highlightId={justDispatchedId}
+                  leavingId={deliveredGhost?.id}
+                />
           )}
           {tab === "history" && (
             <>
@@ -561,7 +637,7 @@ export default function Index() {
                       ? "Los pedidos entregados hoy van a aparecer aquí."
                       : "Aquí verás el historial de tus entregas, cancelaciones y devoluciones."}
                   />
-                : <HistoryTable deliveries={visibleHistory} />}
+                : <HistoryTable deliveries={visibleHistory} highlightId={justDeliveredId} />}
             </>
           )}
         </div>
@@ -748,12 +824,12 @@ function OrderTable({ orders }: { orders: Order[] }) {
   );
 }
 
-function DeliveryTable({ deliveries, highlightId }: { deliveries: ActiveDelivery[]; highlightId?: string | null }) {
+function DeliveryTable({ deliveries, highlightId, leavingId }: { deliveries: ActiveDelivery[]; highlightId?: string | null; leavingId?: string }) {
   const now = useNow(15_000);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "10px", padding: "14px 0 4px", ...T }}>
       {deliveries.map((d, i) => (
-        <DeliveryRow key={d.id} d={d} now={now} delay={Math.min(i, 8) * 35} highlight={d.id === highlightId} />
+        <DeliveryRow key={d.id} d={d} now={now} delay={Math.min(i, 8) * 35} highlight={d.id === highlightId} leaving={d.id === leavingId} />
       ))}
     </div>
   );
@@ -783,7 +859,7 @@ function minutesUntil(iso: string, now: number) {
 const DELIVERY_STEPS = ["Buscando conductor", "Va a tu tienda", "Camino al cliente", "Entregado"];
 const STEP_BY_STATUS: Record<string, number> = { pending: 0, pickup: 1, pickup_complete: 2, dropoff: 2, delivered: 3 };
 
-function DeliveryRow({ d, now, delay = 0, highlight = false }: { d: ActiveDelivery; now: number; delay?: number; highlight?: boolean }) {
+function DeliveryRow({ d, now, delay = 0, highlight = false, leaving = false }: { d: ActiveDelivery; now: number; delay?: number; highlight?: boolean; leaving?: boolean }) {
   const fetcher = useFetcher<{ error?: string; ok?: boolean }>();
   const [confirming, setConfirming] = useState(false);
   const busy = fetcher.state !== "idle";
@@ -793,14 +869,15 @@ function DeliveryRow({ d, now, delay = 0, highlight = false }: { d: ActiveDelive
   // El conductor está por llegar (o ya llegó) a retirar: lo más importante para la tienda.
   const pickupMin = d.status === "pickup" && d.pickupEta ? minutesUntil(d.pickupEta, now) : null;
   const arriving = pickupMin !== null && pickupMin <= 3;
+  const delivered = d.status === "delivered";
 
   return (
     <div
-      className={highlight ? "fu-just-dispatched" : undefined}
+      className={leaving ? "fu-delivered-out" : highlight ? "fu-just-dispatched" : undefined}
       style={{
-        border: `1px solid ${arriving ? "#C9F03C" : "#E4E2F0"}`,
+        border: `1px solid ${delivered ? "#9FDCC7" : arriving ? "#C9F03C" : "#E4E2F0"}`,
         borderRadius: "12px", background: "white", overflow: "hidden",
-        ...(highlight ? {} : fu(delay)),
+        ...(highlight || leaving ? {} : fu(delay)),
       }}
     >
       {/* Encabezado: orden, cliente y acciones */}
@@ -878,13 +955,13 @@ function DeliveryRow({ d, now, delay = 0, highlight = false }: { d: ActiveDelive
       </div>
 
       {/* Progreso */}
-      <DeliveryStepper step={step} />
+      <DeliveryStepper step={step} complete={delivered} />
 
       {/* Lo que la tienda necesita saber ahora: quién viene y cuándo */}
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap",
-        padding: "12px 16px", borderTop: `1px solid ${arriving ? "#C9F03C" : "#F0EEF7"}`,
-        background: arriving ? "#F4FBDD" : "#F6F5FB",
+        padding: "12px 16px", borderTop: `1px solid ${delivered ? "#CDEEE2" : arriving ? "#C9F03C" : "#F0EEF7"}`,
+        background: delivered ? "#E6F7F2" : arriving ? "#F4FBDD" : "#F6F5FB",
       }}>
         {d.status === "pending" ? (
           <span style={{ fontSize: "13px", color: "#6E6B85" }}>
@@ -899,22 +976,43 @@ function DeliveryRow({ d, now, delay = 0, highlight = false }: { d: ActiveDelive
   );
 }
 
-function DeliveryStepper({ step }: { step: number }) {
+function DeliveryStepper({ step, complete = false }: { step: number; complete?: boolean }) {
+  // Al montar, los pasos completados se llenan uno tras otro (120 ms entre cada
+  // uno) y después el paso actual empieza a "cargar" en bucle.
+  const STAGGER = 120;
   return (
     <div style={{ display: "grid", gridTemplateColumns: `repeat(${DELIVERY_STEPS.length}, 1fr)`, gap: "6px", padding: "14px 16px" }}>
       {DELIVERY_STEPS.map((label, i) => {
-        const done = i < step;
-        const current = i === step;
+        const done = i < step || complete;
+        const current = i === step && !complete;
         return (
           <div key={label} style={{ display: "flex", flexDirection: "column", gap: "6px", minWidth: 0 }}>
-            <div style={{
-              height: "4px", borderRadius: "99px",
-              background: done || current ? "#4B2BE0" : "#E4E2F0",
-              opacity: current ? 1 : done ? 0.45 : 1,
-            }} />
+            <div style={{ position: "relative", height: "4px", borderRadius: "99px", background: "#E4E2F0", overflow: "hidden" }}>
+              {done && (
+                <div
+                  className="fu-step-fill"
+                  style={{
+                    position: "absolute", inset: 0, background: complete ? "#1D9E75" : "#A99BF0",
+                    // Al completarse, solo el último tramo se llena (los demás ya estaban llenos).
+                    animationDelay: complete ? "0ms" : `${i * STAGGER}ms`,
+                    ...(complete && i < step ? { animation: "none" } : {}),
+                  }}
+                />
+              )}
+              {current && (
+                <>
+                  {/* Base tenue para que el paso actual se distinga aun con la barra vacía */}
+                  <div style={{ position: "absolute", inset: 0, background: "#D3CCF9" }} />
+                  <div
+                    className="fu-step-loading"
+                    style={{ position: "absolute", inset: 0, background: "#4B2BE0", animationDelay: `${step * STAGGER}ms` }}
+                  />
+                </>
+              )}
+            </div>
             <span style={{
               fontSize: "12px", fontWeight: current ? 600 : 500,
-              color: current ? "#241266" : done ? "#6E6B85" : "#B4B1C6",
+              color: complete && i === DELIVERY_STEPS.length - 1 ? "#1D9E75" : current ? "#241266" : done ? "#6E6B85" : "#B4B1C6",
               whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
             }}>
               {label}
@@ -959,6 +1057,19 @@ function CourierInfo({ d }: { d: ActiveDelivery }) {
 }
 
 function EtaInfo({ d, now, pickupMin, arriving }: { d: ActiveDelivery; now: number; pickupMin: number | null; arriving: boolean }) {
+  if (d.status === "delivered") {
+    return (
+      <div style={{ display: "inline-flex", alignItems: "center", gap: "8px", color: "#1D9E75" }}>
+        <span style={{
+          width: "22px", height: "22px", borderRadius: "50%", background: "#1D9E75",
+          display: "inline-flex", alignItems: "center", justifyContent: "center",
+        }}>
+          <Check size={14} color="#FFFFFF" strokeWidth={3} aria-hidden="true" />
+        </span>
+        <span style={{ fontSize: "15px", fontWeight: 700, fontFamily: "Sora, sans-serif" }}>Entregado</span>
+      </div>
+    );
+  }
   if (d.status === "pickup" && d.pickupEta && pickupMin !== null) {
     return (
       <div style={{ textAlign: "right" }}>
@@ -985,11 +1096,11 @@ function EtaInfo({ d, now, pickupMin, arriving }: { d: ActiveDelivery; now: numb
   return null;
 }
 
-function HistoryTable({ deliveries }: { deliveries: HistoryDelivery[] }) {
+function HistoryTable({ deliveries, highlightId }: { deliveries: HistoryDelivery[]; highlightId?: string | null }) {
   return (
     <div style={{ ...T }}>
       <div style={{
-        display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto auto",
+        display: "grid", gridTemplateColumns: "1fr 1fr 1.3fr 150px 20px", gap: "12px",
         padding: "8px 16px", borderBottom: "1px solid #f3f4f6",
       }}>
         {["Orden", "Cliente", "Dirección", "Estado", ""].map((h) => (
@@ -998,77 +1109,40 @@ function HistoryTable({ deliveries }: { deliveries: HistoryDelivery[] }) {
           </div>
         ))}
       </div>
-      {deliveries.map((d, i) => <HistoryRow key={d.id} d={d} delay={Math.min(i, 8) * 35} />)}
+      {deliveries.map((d, i) => (
+        <HistoryRow key={d.id} d={d} delay={Math.min(i, 8) * 35} highlight={d.id === highlightId} />
+      ))}
     </div>
   );
 }
 
-function HistoryRow({ d, delay = 0 }: { d: HistoryDelivery; delay?: number }) {
-  const fetcher = useFetcher<{ image?: string; kind?: string; error?: string }>();
-  const loading = fetcher.state !== "idle";
-  const loadProof = () => fetcher.load(`/app/deliveries/${d.id}/proof`);
-
+function HistoryRow({ d, delay = 0, highlight = false }: { d: HistoryDelivery; delay?: number; highlight?: boolean }) {
+  // Toda la fila lleva al detalle (foto de entrega, conductor, horarios y costo).
   return (
-    <div className="fu-row" style={{ borderBottom: "1px solid #f9fafb", background: "white", ...fu(delay) }}>
-      <div style={{
-        display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto auto",
-        alignItems: "center", padding: "13px 16px",
-      }}>
-        <div>
-          <span style={{ fontSize: "14px", fontWeight: "600", color: "#111827" }}>{d.orderNumber}</span>
-          <span style={{ fontSize: "12px", color: "#9ca3af", marginLeft: "8px" }}>{d.timeAgo}</span>
-        </div>
-        <div style={{ fontSize: "13px", color: "#374151" }}>{d.customerName}</div>
-        <div style={{ fontSize: "13px", color: "#6b7280" }}>{d.customerAddress}, {d.customerComuna}</div>
-        <div style={{ paddingRight: "16px" }}>
-          <StatusDot status={d.status} />
-        </div>
-        <div style={{ display: "flex", gap: "12px", alignItems: "center", justifyContent: "flex-end" }}>
-          {d.status === "delivered" && (
-            <button
-              onClick={loadProof}
-              disabled={loading}
-              style={{
-                fontSize: "12px", color: "#4B2BE0", fontWeight: "600",
-                background: "none", border: "none", cursor: loading ? "default" : "pointer",
-                padding: 0, whiteSpace: "nowrap", ...T,
-              }}
-            >
-              {loading ? "Cargando..." : "Ver foto de entrega"}
-            </button>
-          )}
-          {d.uberTrackingUrl && (
-            <a
-              href={d.uberTrackingUrl}
-              target="_blank"
-              rel="noreferrer"
-              style={{ fontSize: "12px", color: "#4B2BE0", fontWeight: "600", textDecoration: "none", whiteSpace: "nowrap" }}
-            >
-              Ver tracking
-            </a>
-          )}
-        </div>
+    <Link
+      to={`/app/deliveries/${d.id}`}
+      className={highlight ? "fu-history-row fu-just-delivered" : "fu-history-row"}
+      style={{
+        display: "grid", gridTemplateColumns: "1fr 1fr 1.3fr 150px 20px", gap: "12px",
+        alignItems: "center", padding: "13px 16px", textDecoration: "none",
+        borderBottom: "1px solid #f9fafb", background: "white",
+        ...(highlight ? {} : fu(delay)),
+      }}
+    >
+      <div>
+        <span style={{ fontSize: "14px", fontWeight: "600", color: "#111827" }}>{d.orderNumber}</span>
+        <span style={{ fontSize: "12px", color: "#9ca3af", marginLeft: "8px" }}>{d.timeAgo}</span>
       </div>
-
-      {/* Prueba de entrega cargada on-demand */}
-      {fetcher.data?.image && (
-        <div style={{ padding: "0 16px 14px" }}>
-          <div style={{ fontSize: "11px", color: "#9ca3af", marginBottom: "6px" }}>
-            {fetcher.data.kind === "signature" ? "Firma de recepción" : "Foto de entrega"} · Uber Direct
-          </div>
-          <img
-            src={fetcher.data.image}
-            alt="Prueba de entrega"
-            style={{ maxWidth: "280px", width: "100%", borderRadius: "10px", border: "1px solid #e5e7eb", display: "block" }}
-          />
-        </div>
-      )}
-      {fetcher.data?.error && (
-        <div style={{ padding: "0 16px 14px", fontSize: "12px", color: "#9ca3af" }}>
-          {fetcher.data.error}
-        </div>
-      )}
-    </div>
+      <div style={{ fontSize: "13px", color: "#374151" }}>{d.customerName}</div>
+      <div style={{ fontSize: "13px", color: "#6b7280" }}>{d.customerAddress}, {d.customerComuna}</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+        <StatusDot status={d.status} />
+        <span suppressHydrationWarning style={{ fontSize: "11px", color: "#9ca3af", paddingLeft: "12px" }}>
+          {clockTime(d.finishedAt)}
+        </span>
+      </div>
+      <ChevronRight className="fu-chevron" size={16} color="#B4B1C6" aria-hidden="true" />
+    </Link>
   );
 }
 
