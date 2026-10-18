@@ -3,9 +3,7 @@ import db from "../db.server";
 import { getDeliveryQuote, uberCredsFromConfig, UberApiError, UberNotConfiguredError } from "../services/uber-direct.server";
 import type { QuoteResult } from "../services/uber-direct.server";
 import { logError, logInfo, logDebug } from "../lib/logger.server";
-import { MAX_ORDER_WEIGHT_GRAMS, sizeFromGrams } from "../lib/package-size";
-import { buildManifest } from "../lib/manifest";
-import { isUberTestShop } from "../lib/test-shops.server";
+import { MAX_ORDER_WEIGHT_GRAMS } from "../lib/package-size";
 
 // Cache en memoria: clave = "shop|zip_destino|address1_destino", TTL = 5 min
 // Evita llamar a Uber cada vez que el cliente cambia algo menor en el checkout
@@ -96,12 +94,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   // Límite de peso: Uber no valida peso al cotizar, así que lo controla Fium.
   // Shopify manda el peso de cada producto en gramos (por unidad) en rate.items.
-  const items: Array<{ name?: string; grams?: number; quantity?: number; price?: number; requires_shipping?: boolean }> =
+  const items: Array<{ grams?: number; quantity?: number; requires_shipping?: boolean }> =
     body?.rate?.items ?? [];
   const shippable = items.filter((i) => i.requires_shipping !== false);
-  // EXPERIMENTO de peso (solo tiendas de prueba): sin el límite de Fium y con los
-  // productos en la cotización, para ver si Uber por sí solo rechaza o cambia el precio.
-  const weightExperiment = isUberTestShop(shop);
   // Producto sin peso cargado en Shopify (0 g): no se puede garantizar que Uber
   // pueda llevar el pedido, así que no se ofrece Fium.
   if (shippable.some((i) => !i.grams || i.grams <= 0)) {
@@ -109,7 +104,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return Response.json({ rates: [] });
   }
   const totalGrams = shippable.reduce((sum, i) => sum + (i.grams ?? 0) * (i.quantity ?? 1), 0);
-  if (totalGrams > MAX_ORDER_WEIGHT_GRAMS && !weightExperiment) {
+  if (totalGrams > MAX_ORDER_WEIGHT_GRAMS) {
     logInfo("carrier/rates/sobrepeso", "Carrito excede el peso máximo de Uber — sin tarifa", {
       shop, totalGrams, maxGrams: MAX_ORDER_WEIGHT_GRAMS,
     });
@@ -145,58 +140,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   const cacheKey = `${shop}|${postalCode}|${address1}|${city}`;
-  const cached = weightExperiment ? null : getCached(cacheKey);
-
-  const pickupAddress = {
-    streetAddress: [storeConfig.address],
-    city: storeConfig.comuna,
-    state: storeConfig.region,
-    zipCode: storeConfig.zipCode,
-  };
-  const dropoffAddress = {
-    streetAddress: [address1],
-    city,
-    state: dest.province ?? city,
-    zipCode: postalCode,
-  };
-
-  let experimentQuote: QuoteResult | null = null;
-  if (weightExperiment) {
-    // Shopify manda el precio de cada producto en centavos.
-    const manifest = buildManifest(
-      shippable.map((i) => ({
-        title: i.name ?? "Producto",
-        quantity: i.quantity ?? 1,
-        grams: i.grams ?? 0,
-        unitPrice: (i.price ?? 0) / 100,
-      })),
-      sizeFromGrams(totalGrams) ?? "small"
-    );
-    const [plain, withItems] = await Promise.allSettled([
-      getDeliveryQuote(creds, { pickupAddress, dropoffAddress }),
-      getDeliveryQuote(creds, {
-        pickupAddress, dropoffAddress,
-        manifestItems: manifest.items, manifestTotalValue: manifest.totalValue,
-      }),
-    ]);
-    const describe = (r: PromiseSettledResult<QuoteResult>) =>
-      r.status === "fulfilled"
-        ? { ok: true, fee: r.value.fee, duration: r.value.duration }
-        : { ok: false, error: r.reason instanceof UberApiError ? `${r.reason.status} ${r.reason.body.slice(0, 400)}` : String(r.reason) };
-    logInfo("carrier/rates/experimento-peso", "Cotización sin productos vs con productos", {
-      shop, totalKg: totalGrams / 1000, size: manifest.items[0]?.size,
-      sinProductos: describe(plain), conProductos: describe(withItems),
-    });
-    // Al checkout va la cotización con productos: si Uber la rechaza, Fium no aparece.
-    if (withItems.status === "rejected") return Response.json({ rates: [] });
-    experimentQuote = withItems.value;
-  }
+  const cached = getCached(cacheKey);
 
   try {
     // Usar cache si existe — respuesta inmediata
-    const quotePromise = cached ?? experimentQuote
-      ? Promise.resolve((cached ?? experimentQuote)!)
-      : getDeliveryQuote(creds, { pickupAddress, dropoffAddress });
+    const quotePromise = cached
+      ? Promise.resolve(cached)
+      : getDeliveryQuote(creds, {
+      pickupAddress: {
+        streetAddress: [storeConfig.address],
+        city: storeConfig.comuna,
+        state: storeConfig.region,
+        zipCode: storeConfig.zipCode,
+      },
+      dropoffAddress: {
+        streetAddress: [address1],
+        city,
+        state: dest.province ?? city,
+        zipCode: postalCode,
+      },
+    });
 
     const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error("timeout")), 8000)
