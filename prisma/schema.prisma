@@ -91,6 +91,9 @@ model Delivery {
   courierPhone   String?
   courierVehicle String?   // ej. "Toyota Prius blanco" o "Moto"
   liveSyncedAt   DateTime? // Última consulta a Uber (webhook, panel o detalle)
+  // Envío devuelto: cuándo la tienda cerró el aviso del panel ("Entendido").
+  // Null = el aviso sigue visible.
+  attentionAckAt DateTime?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 

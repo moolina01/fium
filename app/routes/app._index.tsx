@@ -25,7 +25,18 @@ type Order = {
   address: string;
   city: string;
   autoDispatchFailed: boolean;
+  // true si Uber canceló un envío ya creado; false si nunca se pudo crear.
+  failedAfterDispatch: boolean;
   failureReason: string | null;
+};
+
+// Envío que Uber devolvió a la tienda y que la tienda aún no marcó como visto.
+type ReturnedAlert = {
+  id: string;
+  orderNumber: string;
+  customerName: string;
+  reason: string | null;
+  timeAgo: string;
 };
 
 type DismissedOrderRow = {
@@ -182,6 +193,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     deliveries.filter((d: any) => d.status === "failed").map((d: any) => d.orderId)
   );
   // Motivo real que devolvió Uber Direct para cada orden que falló en el auto-despacho.
+  const failedAfterDispatchIds = new Set(
+    deliveries.filter((d: any) => d.status === "failed" && d.uberDeliveryId).map((d: any) => d.orderId)
+  );
   const failureReasonByOrderId = new Map(
     deliveries
       .filter((d: any) => d.status === "failed")
@@ -213,6 +227,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       address: e.node.shippingAddress?.address1 ?? "",
       city: e.node.shippingAddress?.city ?? "",
       autoDispatchFailed: failedOrderIds.has(e.node.id),
+      failedAfterDispatch: failedAfterDispatchIds.has(e.node.id),
       failureReason: failureReasonByOrderId.get(e.node.id) ?? null,
     }));
 
@@ -247,6 +262,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       courierVehicle: d.courierVehicle ?? null,
     }));
 
+  const returnedAlerts: ReturnedAlert[] = deliveries
+    .filter((d: any) => d.status === "returned" && !d.attentionAckAt)
+    .sort((a: any, b: any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    .map((d: any) => ({
+      id: d.id,
+      orderNumber: d.orderNumber,
+      customerName: d.customerName,
+      reason: d.failureReason ?? null,
+      timeAgo: calcTimeAgo(d.updatedAt.toString()),
+    }));
+
   // Historial — deliveries en estado terminal, más recientes primero
   const history: HistoryDelivery[] = deliveries
     .filter((d: any) => ["delivered", "canceled", "returned"].includes(d.status))
@@ -269,6 +295,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     hasConfig: true,
     pendingOrders,
     dismissedOrders,
+    returnedAlerts,
     activeDeliveries,
     history,
     active: deliveries.filter((d: any) =>
@@ -313,6 +340,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       logError("dashboard/register-carrier", e, { shop: session.shop });
       return { error: "Error al activar Fium en el checkout. Intenta de nuevo." };
     }
+  }
+
+  if (intent === "ack_returned") {
+    const deliveryId = (formData.get("deliveryId") as string) || "";
+    await db.delivery.updateMany({
+      where: { id: deliveryId, shop: session.shop, status: "returned" },
+      data: { attentionAckAt: new Date() },
+    });
+    return { ok: true };
   }
 
   if (intent === "dismiss_order" || intent === "restore_order") {
@@ -398,6 +434,11 @@ const GLOBAL_CSS = `
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 @keyframes fuOverlayIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fuPulseRed {
+  0%   { box-shadow: 0 0 0 0 rgba(220,38,38,0.5); }
+  70%  { box-shadow: 0 0 0 6px rgba(220,38,38,0); }
+  100% { box-shadow: 0 0 0 0 rgba(220,38,38,0); }
+}
 .fu-tile { cursor: pointer; transition: background 0.15s ease; text-align: left; border: none; }
 .fu-tile:hover { background: #fafafb; }
 @keyframes fuJustDispatched {
@@ -461,7 +502,7 @@ export default function Index() {
   // directo a "esos" pedidos en vez de tener que buscarlos a mano en la tabla.
   const [pendingFilter, setPendingFilter] = useState<"all" | "problems">("all");
   const [historyFilter, setHistoryFilter] = useState<"all" | "today">("all");
-  const { pendingOrders, dismissedOrders, activeDeliveries, history, active, delivered, issues, setup } = data;
+  const { pendingOrders, dismissedOrders, returnedAlerts, activeDeliveries, history, active, delivered, issues, setup } = data;
 
   // "No gestionar": se pide confirmación y la fila se oculta al tiro (optimista)
   // mientras el servidor lo guarda.
@@ -539,6 +580,10 @@ export default function Index() {
     const before = prevActive.current;
     prevActive.current = activeDeliveries;
     const stillActive = new Set(activeDeliveries.map((d) => d.id));
+    const returned = before.find(
+      (d) => !stillActive.has(d.id) && history.some((h) => h.id === d.id && h.status === "returned")
+    );
+    if (returned) showToast(`Pedido ${returned.orderNumber} devuelto a tu tienda`, { isError: true });
     const delivered = before.find(
       (d) => !stillActive.has(d.id) && history.some((h) => h.id === d.id && h.status === "delivered")
     );
@@ -618,6 +663,12 @@ export default function Index() {
           </div>
         </div>
       </s-section>
+
+      {returnedAlerts.length > 0 && (
+        <s-section>
+          <ReturnedAlerts alerts={returnedAlerts} />
+        </s-section>
+      )}
 
       {/* Métricas */}
       <s-section>
@@ -939,15 +990,73 @@ function OrderTable({ orders, onDismiss }: { orders: Order[]; onDismiss: (order:
               background: "#FEF2F2", borderRadius: "6px",
               fontSize: "12px", color: "#DC2626", fontWeight: "500",
             }}>
-              {order.failureReason
-                ? `El auto-despacho falló: ${order.failureReason}`
-                : "El auto-despacho falló al contactar Uber Direct."}{" "}
-              Despacha manualmente.
+              {order.failedAfterDispatch
+                ? order.failureReason ?? "Uber Direct canceló el envío. Vuelve a despacharlo."
+                : <>
+                    {order.failureReason
+                      ? `El auto-despacho falló: ${order.failureReason}`
+                      : "El auto-despacho falló al contactar Uber Direct."}{" "}
+                    Despacha manualmente.
+                  </>}
             </div>
           )}
         </div>
         );
       })}
+    </div>
+  );
+}
+
+function ReturnedAlerts({ alerts }: { alerts: ReturnedAlert[] }) {
+  const fetcher = useFetcher();
+  // Se oculta al tiro al apretar "Entendido", sin esperar la recarga.
+  const ackingId = fetcher.state !== "idle" ? (fetcher.formData?.get("deliveryId") as string) : null;
+  const visible = alerts.filter((a) => a.id !== ackingId);
+  if (visible.length === 0) return null;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "8px", ...T }}>
+      {visible.map((a, i) => (
+        <div key={a.id} role="alert" style={{
+          display: "flex", alignItems: "flex-start", gap: "12px", flexWrap: "wrap",
+          background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: "10px",
+          padding: "14px 16px", ...fu(i * 60),
+        }}>
+          <span aria-hidden="true" style={{
+            width: "8px", height: "8px", borderRadius: "50%", background: "#DC2626",
+            marginTop: "6px", flexShrink: 0, animation: "fuPulseRed 2s ease-out infinite",
+          }} />
+          <div style={{ flex: "1 1 260px", minWidth: 0 }}>
+            <div style={{ fontSize: "14px", fontWeight: 700, color: "#7F1D1D" }}>
+              Pedido {a.orderNumber} devuelto a tu tienda
+              <span style={{ fontSize: "12px", fontWeight: 500, color: "#B91C1C", marginLeft: "8px" }}>{a.timeAgo}</span>
+            </div>
+            <div style={{ fontSize: "13px", color: "#7F1D1D", marginTop: "3px", lineHeight: 1.5 }}>
+              {a.reason ?? "El conductor no pudo entregar el pedido y lo devolvió a tu tienda."}{" "}
+              Coordina con {a.customerName} un nuevo envío o el reembolso desde Shopify.
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", marginLeft: "auto" }}>
+            <Link
+              to={`/app/deliveries/${a.id}`}
+              className="fu-ghost-btn"
+              style={{ color: "#B91C1C", textDecoration: "none" }}
+            >
+              Ver detalle
+            </Link>
+            <button
+              type="button"
+              className="fu-btn"
+              onClick={() => fetcher.submit({ intent: "ack_returned", deliveryId: a.id }, { method: "post" })}
+              style={{
+                padding: "6px 14px", border: "none", borderRadius: "6px", cursor: "pointer",
+                background: "#DC2626", color: "white", fontSize: "12px", fontWeight: 600, fontFamily: "inherit",
+              }}
+            >
+              Entendido
+            </button>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

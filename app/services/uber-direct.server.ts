@@ -377,6 +377,10 @@ export type DeliveryResult = {
   pickupEta: string | null;
   dropoffEta: string | null;
   liveMode: boolean;
+  // Motivo que da Uber cuando cancela o devuelve un envío (código o texto), si viene.
+  issueReason: string | null;
+  // Campos crudos de Uber relacionados con cancelación/devolución, para el log.
+  issueDebug: Record<string, unknown>;
   courier: {
     name: string;
     phone: string;
@@ -508,6 +512,27 @@ export async function getProofOfDelivery(
 
 // ─── Response mapper ────────────────────────────────────────────────────────
 
+// El nombre del campo con el motivo no está claro en la documentación pública de
+// Uber Direct, así que se buscan los candidatos conocidos; issueDebug queda en el
+// log para confirmar cuál llega de verdad.
+function extractIssueReason(data: Record<string, unknown>): string | null {
+  const pick = (v: unknown): string | null => {
+    if (typeof v === "string") return v.trim() || null;
+    if (v && typeof v === "object") {
+      const o = v as Record<string, unknown>;
+      return pick(o.secondary_reason) ?? pick(o.primary_reason) ?? pick(o.reason) ?? pick(o.description) ?? pick(o.code);
+    }
+    return null;
+  };
+  return (
+    pick(data.cancelation_reason) ??
+    pick(data.cancellation_reason) ??
+    pick(data.undeliverable_reason) ??
+    pick(data.cancel_reason) ??
+    null
+  );
+}
+
 function mapDeliveryResponse(data: Record<string, unknown>): DeliveryResult {
   const courier = data.courier as Record<string, unknown> | null;
   const courierLocation = courier?.location as Record<string, number> | null;
@@ -521,6 +546,10 @@ function mapDeliveryResponse(data: Record<string, unknown>): DeliveryResult {
     pickupEta: (data.pickup_eta as string) ?? null,
     dropoffEta: (data.dropoff_eta as string) ?? null,
     liveMode: (data.live_mode as boolean) ?? false,
+    issueReason: extractIssueReason(data),
+    issueDebug: Object.fromEntries(
+      Object.entries(data).filter(([k]) => /cancel|undeliver|return|fail|reason/i.test(k))
+    ),
     courier: courier
       ? {
           name: (courier.name as string) ?? "",

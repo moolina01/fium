@@ -6,6 +6,39 @@ import { logError, logInfo } from "./logger.server";
 export const UBER_CANCELED_REASON =
   "Uber Direct canceló el envío (normalmente porque no encontró un courier disponible). Vuelve a despacharlo.";
 
+// Motivos de Uber → español. Si llega un código desconocido se muestra legible
+// ("item_damaged" → "item damaged") en vez de esconderlo.
+const ISSUE_REASONS_ES: Array<[RegExp, string]> = [
+  [/no.?courier|courier.?unavailable|couriers?_not_available|no_driver/i, "no había conductores disponibles"],
+  [/customer.*(unavailable|not.?available|no.?show|unreachable|not.?respond)/i, "el cliente no estaba disponible o no contestó"],
+  [/customer.*(refus|reject)/i, "el cliente rechazó el pedido"],
+  [/(address|location).*(wrong|invalid|incorrect|not.?found|inaccessible|issue)|cannot.?access|unable.?to.?access/i, "el conductor no pudo llegar a la dirección"],
+  [/too.?(large|big|heavy)|oversize|overweight|does.?not.?fit|item.?size/i, "el pedido era muy grande o pesado para el conductor"],
+  [/(store|merchant).*(closed|not.?ready|unavailable)|order.?not.?ready|pickup.?(issue|failed)/i, "el conductor no pudo retirar el pedido en tu tienda"],
+  [/damag/i, "el pedido se dañó"],
+  [/unsafe|safety/i, "el conductor reportó un problema de seguridad"],
+];
+
+export function describeIssueReason(reason: string | null | undefined): string | null {
+  if (!reason) return null;
+  for (const [re, es] of ISSUE_REASONS_ES) if (re.test(reason)) return es;
+  return reason.replace(/[_-]+/g, " ").trim().toLowerCase() || null;
+}
+
+/** Texto para la tienda cuando Uber cancela el envío. */
+export function uberCanceledReason(reason: string | null | undefined): string {
+  const es = describeIssueReason(reason);
+  return es ? `Uber Direct canceló el envío: ${es}. Vuelve a despacharlo.` : UBER_CANCELED_REASON;
+}
+
+/** Texto para la tienda cuando Uber devuelve el pedido. */
+export function uberReturnedReason(reason: string | null | undefined): string {
+  const es = describeIssueReason(reason);
+  return es
+    ? `El conductor no pudo entregar el pedido (${es}) y lo devolvió a tu tienda.`
+    : "El conductor no pudo entregar el pedido y lo devolvió a tu tienda.";
+}
+
 const VALID_STATUSES = ["pending", "pickup", "pickup_complete", "dropoff", "delivered", "canceled", "returned"];
 
 // Estados de Uber → eventos de fulfillment de Shopify, para que la línea de
@@ -23,6 +56,8 @@ type LiveDelivery = {
   trackingUrl?: string | null;
   pickupEta?: string | null;
   dropoffEta?: string | null;
+  issueReason?: string | null;
+  issueDebug?: Record<string, unknown>;
   courier?: {
     name: string;
     phone: string;
@@ -84,16 +119,29 @@ export async function applyUberStatus(
     return delivery.status;
   }
 
+  if (live.status === "canceled" || live.status === "returned") {
+    // Para confirmar en qué campo manda Uber el motivo (ver extractIssueReason).
+    logInfo(context, `Uber informó envío ${live.status}`, {
+      shop: delivery.shop, orderNumber: delivery.orderNumber,
+      issueReason: live.issueReason ?? null, uber: live.issueDebug ?? {},
+    });
+  }
+
   if (live.status === "canceled") {
     // Cancelado por la tienda: ya quedó "canceled" antes de llamar a Uber.
     if (delivery.status === "canceled" || delivery.status === "failed") return delivery.status;
-    await handleUberCancellation(delivery, context);
+    await handleUberCancellation(delivery, context, live.issueReason);
     return "failed";
   }
 
   await db.delivery.update({
     where: { id: delivery.id },
-    data: { status: live.status, ...details },
+    data: {
+      status: live.status,
+      ...details,
+      // Devuelto: queda el motivo para el aviso del panel y el detalle del envío.
+      ...(live.status === "returned" && { failureReason: uberReturnedReason(live.issueReason) }),
+    },
   });
 
   // Solo al entrar a un estado nuevo (ya filtrado arriba), para no duplicar eventos.
@@ -120,11 +168,12 @@ export async function applyUberStatus(
  */
 export async function handleUberCancellation(
   delivery: { id: string; shop: string; orderId: string; orderNumber: string },
-  context: string
+  context: string,
+  issueReason?: string | null
 ): Promise<void> {
   await db.delivery.update({
     where: { id: delivery.id },
-    data: { status: "failed", failureReason: UBER_CANCELED_REASON },
+    data: { status: "failed", failureReason: uberCanceledReason(issueReason) },
   });
   logInfo(context, "Uber canceló el envío — vuelve a 'Por despachar'", {
     shop: delivery.shop,

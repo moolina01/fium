@@ -6,7 +6,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getDelivery, cancelDelivery, getStoreUberCreds } from "../services/uber-direct.server";
 import { logError } from "../lib/logger.server";
-import { applyUberStatus, describeVehicle, UBER_CANCELED_REASON } from "../lib/delivery-status.server";
+import { applyUberStatus, describeVehicle } from "../lib/delivery-status.server";
 import { colors as F, FONT, DISPLAY_FONT } from "../lib/theme";
 
 function formatEta(iso: string | null | undefined) {
@@ -42,7 +42,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       const creds = await getStoreUberCreds(session.shop);
       live = await getDelivery(creds, delivery.uberDeliveryId);
       const newStatus = await applyUberStatus(delivery, live, "deliveries/detail");
-      if (newStatus === "failed" && delivery.status !== "failed") delivery.failureReason = UBER_CANCELED_REASON;
+      if (newStatus !== delivery.status) {
+        // Cancelado o devuelto: el motivo lo acaba de guardar applyUberStatus.
+        const saved = await db.delivery.findUnique({ where: { id: delivery.id }, select: { failureReason: true } });
+        delivery.failureReason = saved?.failureReason ?? delivery.failureReason;
+      }
       delivery.status = newStatus;
       if (live.trackingUrl) delivery.uberTrackingUrl = live.trackingUrl;
     } catch (e) {
@@ -218,14 +222,19 @@ export default function DeliveryDetail() {
           </div>
         </div>
 
-        {/* Motivo si falló el auto-despacho */}
-        {delivery.status === "failed" && (
+        {/* Motivo si el envío falló, Uber lo canceló o lo devolvió */}
+        {(delivery.status === "failed" || delivery.status === "returned") && (
           <div style={{ background: F.dangerTint, border: "1px solid #FECACA", borderRadius: "12px", padding: "16px 18px" }}>
             <div style={{ fontSize: "13px", fontWeight: "700", color: F.danger, marginBottom: "4px" }}>
               ¿Qué pasó?
             </div>
             <div style={{ fontSize: "13px", color: "#7F1D1D", lineHeight: "1.6" }}>
-              {delivery.failureReason ?? "Uber Direct no pudo procesar este envío. Despacha la orden manualmente desde \"Por despachar\"."}
+              {delivery.status === "returned"
+                ? <>
+                    {delivery.failureReason ?? "El conductor no pudo entregar el pedido y lo devolvió a tu tienda."}{" "}
+                    Coordina con {delivery.customerName} un nuevo envío o el reembolso desde el pedido en Shopify.
+                  </>
+                : delivery.failureReason ?? "Uber Direct no pudo procesar este envío. Despacha la orden manualmente desde \"Por despachar\"."}
             </div>
           </div>
         )}
