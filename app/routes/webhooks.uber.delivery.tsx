@@ -5,6 +5,7 @@ import { verifyUberSignature, type UberWebhookEvent } from "../services/uber-dir
 import { decrypt } from "../lib/crypto.server";
 import { logError, logDebug } from "../lib/logger.server";
 import { addFulfillmentEvent, type FulfillmentEventStatus } from "../lib/fulfillment.server";
+import { handleUberCancellation } from "../lib/delivery-status.server";
 
 const VALID_STATUSES = ["pending", "pickup", "pickup_complete", "dropoff", "delivered", "canceled", "returned"];
 
@@ -70,6 +71,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   const prevStatus = delivery.status;
+
+  // Uber canceló por su cuenta (ej. sin courier). Si la cancelación fue de la
+  // tienda, el delivery ya está en "canceled" y no entra aquí.
+  if (status === "canceled") {
+    if (prevStatus !== "canceled" && prevStatus !== "failed") {
+      await handleUberCancellation(delivery, "uber-webhook/canceled");
+    }
+    return new Response(null, { status: 200 });
+  }
 
   await db.delivery.update({
     where: { id: delivery.id },

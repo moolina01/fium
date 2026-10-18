@@ -8,6 +8,7 @@ import { getDelivery, cancelDelivery, getStoreUberCreds, type UberCreds } from "
 import { getSetupChecklist, type SetupChecklist } from "../lib/setup.server";
 import { saveUberCredentials } from "../lib/uber-credentials.server";
 import { logError } from "../lib/logger.server";
+import { handleUberCancellation, UBER_CANCELED_REASON } from "../lib/delivery-status.server";
 import { FONT } from "../lib/theme";
 import { CountUp } from "../components/CountUp";
 import { UberConnectCard } from "../components/setup/UberConnectCard";
@@ -127,7 +128,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     nonTerminal.map(async (d: any) => {
       try {
         const live = await getDelivery(uberCreds!, d.uberDeliveryId);
-        if (live.status !== d.status) {
+        if (live.status === "canceled") {
+          // Uber canceló por su cuenta (respaldo por si no llegó el webhook).
+          await handleUberCancellation(d, "dashboard/sync-delivery");
+          d.status = "failed";
+          d.failureReason = UBER_CANCELED_REASON;
+        } else if (live.status !== d.status) {
           await db.delivery.update({
             where: { id: d.id },
             data: {
@@ -272,9 +278,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const delivery = await db.delivery.findFirst({ where: { id: deliveryId, shop: session.shop } });
     if (!delivery?.uberDeliveryId) return { error: "Envío no encontrado." };
     try {
-      const creds = await getStoreUberCreds(session.shop);
-      await cancelDelivery(creds, delivery.uberDeliveryId);
+      // Se marca "canceled" ANTES de llamar a Uber: así el webhook de cancelación
+      // que manda Uber no se confunde con una cancelación de Uber (sin courier).
       await db.delivery.update({ where: { id: deliveryId }, data: { status: "canceled" } });
+      try {
+        const creds = await getStoreUberCreds(session.shop);
+        await cancelDelivery(creds, delivery.uberDeliveryId);
+      } catch (e) {
+        await db.delivery.update({ where: { id: deliveryId }, data: { status: delivery.status } });
+        throw e;
+      }
       return { ok: true };
     } catch (e) {
       logError("dashboard/cancel-delivery", e, { deliveryId, shop: session.shop });

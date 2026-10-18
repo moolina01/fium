@@ -137,3 +137,59 @@ export async function addFulfillmentEvent(
     return false;
   }
 }
+
+/**
+ * Cancela las fulfillments activas de la orden, para que vuelva a quedar "sin
+ * preparar" en Shopify. Se usa cuando Uber cancela el envío por su cuenta (ej. no
+ * encontró courier): sin esto la orden sigue como enviada y no reaparece en
+ * "Por despachar". No lanza: registra y devuelve false.
+ */
+export async function cancelOrderFulfillments(
+  admin: AdminGraphql,
+  orderGid: string,
+  context: string
+): Promise<boolean> {
+  try {
+    const res = await admin.graphql(
+      `#graphql
+      query GetFulfillmentsToCancel($id: ID!) {
+        order(id: $id) {
+          fulfillments(first: 10) { id status }
+        }
+      }`,
+      { variables: { id: orderGid } }
+    );
+    const json = await res.json();
+    const active = (json.data?.order?.fulfillments ?? []).filter(
+      (f: { status: string }) => f.status === "SUCCESS" || f.status === "OPEN" || f.status === "PENDING"
+    );
+    if (active.length === 0) {
+      logInfo(context, "orden sin fulfillments activas — nada que cancelar", { orderGid });
+      return true;
+    }
+
+    let ok = true;
+    for (const f of active as Array<{ id: string }>) {
+      const cancelRes = await admin.graphql(
+        `#graphql
+        mutation CancelFulfillment($id: ID!) {
+          fulfillmentCancel(id: $id) {
+            fulfillment { id status }
+            userErrors { field message }
+          }
+        }`,
+        { variables: { id: f.id } }
+      );
+      const cancelJson = await cancelRes.json();
+      const userErrors = cancelJson.data?.fulfillmentCancel?.userErrors ?? [];
+      if (userErrors.length > 0) {
+        logError(context, "fulfillmentCancel devolvió userErrors", { orderGid, fulfillmentId: f.id, userErrors });
+        ok = false;
+      }
+    }
+    return ok;
+  } catch (e) {
+    logError(context, e, { orderGid });
+    return false;
+  }
+}

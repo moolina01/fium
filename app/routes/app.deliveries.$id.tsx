@@ -5,6 +5,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getDelivery, cancelDelivery, getStoreUberCreds } from "../services/uber-direct.server";
 import { logError } from "../lib/logger.server";
+import { handleUberCancellation, UBER_CANCELED_REASON } from "../lib/delivery-status.server";
 import { colors as F, FONT, DISPLAY_FONT } from "../lib/theme";
 
 function formatEta(iso: string | null | undefined) {
@@ -39,7 +40,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     try {
       const creds = await getStoreUberCreds(session.shop);
       live = await getDelivery(creds, delivery.uberDeliveryId);
-      if (live.status !== delivery.status) {
+      if (live.status === "canceled") {
+        // Uber canceló por su cuenta (respaldo por si no llegó el webhook).
+        await handleUberCancellation(delivery, "deliveries/detail");
+        delivery.status = "failed";
+        delivery.failureReason = UBER_CANCELED_REASON;
+      } else if (live.status !== delivery.status) {
         await db.delivery.update({
           where: { id: delivery.id },
           data: { status: live.status, ...(live.trackingUrl ? { uberTrackingUrl: live.trackingUrl } : {}) },
@@ -84,9 +90,16 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     const delivery = await db.delivery.findFirst({ where: { id: deliveryId, shop: session.shop } });
     if (!delivery?.uberDeliveryId) return { error: "Envío no encontrado." };
     try {
-      const creds = await getStoreUberCreds(session.shop);
-      await cancelDelivery(creds, delivery.uberDeliveryId);
+      // Se marca "canceled" ANTES de llamar a Uber: así el webhook de cancelación
+      // que manda Uber no se confunde con una cancelación de Uber (sin courier).
       await db.delivery.update({ where: { id: deliveryId }, data: { status: "canceled" } });
+      try {
+        const creds = await getStoreUberCreds(session.shop);
+        await cancelDelivery(creds, delivery.uberDeliveryId);
+      } catch (e) {
+        await db.delivery.update({ where: { id: deliveryId }, data: { status: delivery.status } });
+        throw e;
+      }
       throw redirect("/app");
     } catch (e) {
       if (e instanceof Response) throw e;
