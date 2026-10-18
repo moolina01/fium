@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { Form, Link, useActionData, useLoaderData, useNavigation } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -9,6 +9,7 @@ import { PACKAGE_SIZES, toPackageSize, sizeFromGrams, formatKg, effectiveSize, C
 import { normalizeChileanPhone } from "../lib/phone";
 import { fulfillOrderWithTracking } from "../lib/fulfillment.server";
 import { isUberTestShop } from "../lib/test-shops.server";
+import { logError } from "../lib/logger.server";
 import { buildManifest, parseManifestLines, type ManifestLine } from "../lib/manifest";
 import { Bike, Car, Check, ExternalLink } from "lucide-react";
 import { colors as F, FONT, DISPLAY_FONT } from "../lib/theme";
@@ -111,7 +112,6 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   }
 
   const formattedTotal = `$${Number(order.totalPriceSet.shopMoney.amount).toFixed(0)} ${order.totalPriceSet.shopMoney.currencyCode}`;
-  const formattedFee = quote ? `$${(quote.fee / 100).toFixed(0)} ${quote.currency}` : null;
 
   // Resolver teléfono del cliente buscando en los campos accesibles con
   // read_orders: dirección de envío > teléfono de la orden > facturación.
@@ -134,7 +134,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const totalGrams = orderWeightGrams(order);
   const suggestedSize = sizeFromGrams(totalGrams);
 
-  return { order, storeConfig, quote, quoteError, orderId, formattedTotal, formattedFee, customerPhone, missingPhone, storePhone, adminOrderUrl, totalGrams, suggestedSize };
+  return { order, storeConfig, quote, quoteError, orderId, formattedTotal, customerPhone, missingPhone, storePhone, adminOrderUrl, totalGrams, suggestedSize };
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
@@ -159,6 +159,12 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
   const formData = await request.formData();
   const quoteId = formData.get("quoteId") as string;
+  // Precio que la tienda vio en pantalla (en la unidad de Uber, ×100). Nunca se
+  // crea un envío más caro que esto sin que la tienda lo vuelva a confirmar.
+  const quotedFee = Number(formData.get("quotedFee")) || 0;
+  if (!quoteId || !quotedFee) {
+    return { error: "No hay una cotización vigente de Uber. Recarga la página para cotizar de nuevo." };
+  }
   const manualPhone = formData.get("manualPhone") as string;
   const dropoffNotes = ((formData.get("dropoffNotes") as string) || "").trim() || undefined;
   const pickupNotes = storeConfig.pickupNotes || undefined;
@@ -201,6 +207,19 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     if (msg.toLowerCase().includes("expired") || msg.includes("quote") || msg.includes("422") || msg.includes("invalid")) {
       try {
         const freshQuote = await getDeliveryQuote(creds, { pickupAddress, dropoffAddress });
+        if (freshQuote.fee > quotedFee) {
+          // La cotización venció y Uber ahora cobra más: no se crea el envío;
+          // se muestra el precio nuevo para que la tienda decida.
+          return {
+            priceChanged: {
+              previousFee: quotedFee,
+              quote: {
+                id: freshQuote.id, fee: freshQuote.fee, currency: freshQuote.currency,
+                duration: freshQuote.duration, expires: freshQuote.expires,
+              },
+            },
+          };
+        }
         delivery = await createDelivery(creds, {
           quoteId: freshQuote.id,
           pickupName: storeConfig.contactName, pickupAddress, pickupPhone, pickupNotes,
@@ -212,6 +231,13 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     } else {
       return { error: msg || "Error al crear el envío en Uber Direct." };
     }
+  }
+
+  if (delivery.fee > quotedFee) {
+    // No debería pasar: Uber respeta el precio de una cotización vigente.
+    logError("orders/manual-dispatch", "Uber cobró más que la cotización mostrada", {
+      shop: session.shop, orderNumber: order.name, quotedFee, fee: delivery.fee,
+    });
   }
 
   // Borrar cualquier registro fallido previo del auto-despacho
@@ -240,14 +266,25 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   throw redirect(`/app?despachado=${created.id}`);
 };
 
+/** Monto de Uber (×100) → "$2.953". */
+function formatClp(uberAmount: number): string {
+  return `$${Math.round(uberAmount / 100).toLocaleString("es-CL")}`;
+}
+
 export default function OrderDetail() {
-  const { order, storeConfig, quote, quoteError, formattedTotal, formattedFee, customerPhone, storePhone, adminOrderUrl, totalGrams, suggestedSize } = useLoaderData<typeof loader>();
+  const { order, storeConfig, quote: initialQuote, quoteError, formattedTotal, customerPhone, storePhone, adminOrderUrl, totalGrams, suggestedSize } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
+  // Si al confirmar la cotización había vencido y Uber subió el precio, se
+  // muestra la cotización nueva y hay que volver a confirmar.
+  const priceChanged = actionData && "priceChanged" in actionData ? actionData.priceChanged : null;
+  const quote = priceChanged?.quote ?? initialQuote;
+  const formattedFee = quote ? formatClp(quote.fee) : null;
   const navigation = useNavigation();
   const confirming = navigation.state === "submitting";
   const font = { fontFamily: FONT };
   // Modal de confirmación antes de despachar (evita envíos accidentales).
   const [showConfirm, setShowConfirm] = useState(false);
+  useEffect(() => { if (actionData) setShowConfirm(false); }, [actionData]);
   // Si la orden no trae teléfono del cliente, pre-llenamos con el de la tienda
   // (Uber lo necesita sí o sí). El merchant puede cambiarlo antes de despachar.
   const [manualPhone, setManualPhone] = useState(customerPhone ? "" : (storePhone ?? ""));
@@ -264,13 +301,24 @@ export default function OrderDetail() {
     <s-page heading={order.name}>
       <div style={{ display: "flex", flexDirection: "column", gap: "14px", ...font }}>
 
-        {actionData?.error && (
+        {priceChanged && (
+          <div role="alert" style={{
+            background: F.warningTint, border: "1px solid #FDE68A", borderRadius: "10px",
+            padding: "13px 16px", color: "#92400E", fontSize: "14px", lineHeight: 1.5,
+          }}>
+            <strong>El precio de Uber cambió:</strong> la cotización anterior venció y ahora el envío cuesta{" "}
+            <strong>{formatClp(priceChanged.quote.fee)}</strong> (antes {formatClp(priceChanged.previousFee)}).
+            No se creó el envío. Revisa el nuevo precio y confirma de nuevo si estás de acuerdo.
+          </div>
+        )}
+
+        {actionData && "error" in actionData && actionData.error && (
           <div style={{
             background: F.dangerTint, border: `1px solid #FECACA`,
             borderRadius: "10px", padding: "13px 16px",
             color: F.danger, fontSize: "14px", display: "flex", gap: "8px",
           }}>
-            ⚠️ {actionData.error}
+            ⚠️ {"error" in actionData ? actionData.error : null}
           </div>
         )}
 
@@ -482,7 +530,7 @@ export default function OrderDetail() {
                 {quoteError ? (
                   <div style={{ background: F.warningTint, border: `1px solid #FDE68A`, borderRadius: "8px", padding: "13px 16px", color: "#92400E", fontSize: "13px", marginBottom: "16px" }}>
                     ⚠️ No se pudo obtener cotización: {quoteError}
-                    <div style={{ marginTop: "4px", fontSize: "12px" }}>Puedes igual crear el envío y Uber Direct calculará el costo.</div>
+                    <div style={{ marginTop: "4px", fontSize: "12px" }}>Sin cotización no se puede crear el envío, para que no se cobre un precio que no viste. Recarga la página para intentar de nuevo.</div>
                   </div>
                 ) : quote ? (
                   <div style={{ marginBottom: "20px" }}>
@@ -508,24 +556,25 @@ export default function OrderDetail() {
                 {/* Botón siempre visible si hay dirección */}
                 <Form method="post">
                   <input type="hidden" name="quoteId" value={quote?.id ?? ""} />
+                  <input type="hidden" name="quotedFee" value={quote?.fee ?? ""} />
                   <input type="hidden" name="manualPhone" value={manualPhone} />
                   <input type="hidden" name="dropoffNotes" value={order.note ?? ""} />
                   <input type="hidden" name="packageSize" value={packageSize} />
                   <button
                     type="button"
-                    onClick={() => { if (effectivePhone) setShowConfirm(true); }}
-                    disabled={!effectivePhone}
+                    onClick={() => { if (canSubmit) setShowConfirm(true); }}
+                    disabled={!canSubmit}
                     style={{
                       width: "100%", padding: "13px",
-                      background: !effectivePhone ? "#9b85ec" : F.brand,
+                      background: !canSubmit ? "#9b85ec" : F.brand,
                       color: "#fff", border: "none", borderRadius: "8px",
                       fontSize: "15px", fontWeight: "600",
-                      cursor: !effectivePhone ? "not-allowed" : "pointer",
-                      boxShadow: !effectivePhone ? "none" : "0 2px 10px rgba(75,43,224,0.3)",
+                      cursor: !canSubmit ? "not-allowed" : "pointer",
+                      boxShadow: !canSubmit ? "none" : "0 2px 10px rgba(75,43,224,0.3)",
                       ...font,
                     }}
                   >
-                    Confirmar y crear envío →
+                    {priceChanged ? `Confirmar con el nuevo precio (${formattedFee}) →` : "Confirmar y crear envío →"}
                   </button>
                   {!effectivePhone && (
                     <div style={{ textAlign: "center", fontSize: "12px", color: F.muted, marginTop: "8px" }}>
@@ -556,8 +605,8 @@ export default function OrderDetail() {
                           ¿Crear el envío ahora?
                         </h3>
                         <p style={{ fontSize: "13px", color: F.muted, lineHeight: 1.6, margin: "0 0 20px" }}>
-                          Al confirmar, <strong>Uber Direct asigna un repartidor de inmediato</strong> y comenzará
-                          el retiro en tu tienda. Esta acción no se puede deshacer.
+                          Uber Direct le cobrará <strong>{formattedFee}</strong> a tu cuenta y asignará un repartidor
+                          de inmediato para retirar en tu tienda. Esta acción no se puede deshacer.
                         </p>
                         <div style={{ display: "flex", gap: "10px" }}>
                           <button
