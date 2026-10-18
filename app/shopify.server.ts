@@ -12,7 +12,7 @@ import { logError } from "./lib/logger.server";
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY,
   apiSecretKey: process.env.SHOPIFY_API_SECRET || "",
-  apiVersion: ApiVersion.October25,
+  apiVersion: ApiVersion.January26,
   scopes: process.env.SCOPES?.split(","),
   appUrl: process.env.SHOPIFY_APP_URL || "",
   authPathPrefix: "/auth",
@@ -67,7 +67,7 @@ export async function registerCarrierService(shop: string, accessToken: string) 
     "X-Shopify-Access-Token": accessToken,
     "Content-Type": "application/json",
   };
-  const base = `https://${shop}/admin/api/${ApiVersion.October25}/carrier_services.json`;
+  const base = `https://${shop}/admin/api/${ApiVersion.January26}/carrier_services.json`;
 
   // Listar todos los carrier services existentes
   const listRes = await fetch(base, { headers });
@@ -85,7 +85,7 @@ export async function registerCarrierService(shop: string, accessToken: string) 
     for (const cs of carrier_services) {
       if (cs.name === "Fium" || cs.name === "Uber Direct") {
         console.log("[carrier] borrando registro viejo:", cs.id, cs.callback_url);
-        await fetch(`https://${shop}/admin/api/${ApiVersion.October25}/carrier_services/${cs.id}.json`, {
+        await fetch(`https://${shop}/admin/api/${ApiVersion.January26}/carrier_services/${cs.id}.json`, {
           method: "DELETE",
           headers,
         });
@@ -108,7 +108,7 @@ export async function registerCarrierService(shop: string, accessToken: string) 
 }
 
 export default shopify;
-export const apiVersion = ApiVersion.October25;
+export const apiVersion = ApiVersion.January26;
 export const addDocumentResponseHeaders = shopify.addDocumentResponseHeaders;
 export const authenticate = shopify.authenticate;
 export const unauthenticated = shopify.unauthenticated;

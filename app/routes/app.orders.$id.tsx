@@ -5,7 +5,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getDeliveryQuote, createDelivery, uberCredsFromConfig } from "../services/uber-direct.server";
-import { PACKAGE_SIZES, toPackageSize, sizeFromGrams, weightToGrams, formatKg } from "../lib/package-size";
+import { PACKAGE_SIZES, toPackageSize, sizeFromGrams, formatKg } from "../lib/package-size";
 import { normalizeChileanPhone } from "../lib/phone";
 import { fulfillOrderWithTracking } from "../lib/fulfillment.server";
 import { isUberTestShop } from "../lib/test-shops.server";
@@ -18,7 +18,7 @@ type ShopifyOrder = {
   shippingAddress: { name: string; address1: string; city: string; province: string | null; zip: string; phone: string | null } | null;
   billingAddress: { phone: string | null } | null;
   totalWeight: string | number | null;
-  lineItems: { edges: Array<{ node: { title: string; quantity: number; requiresShipping: boolean; weight: { unit: string; value: number } | null } }> };
+  lineItems: { edges: Array<{ node: { title: string; quantity: number; requiresShipping: boolean } }> };
 };
 
 async function fetchOrder(
@@ -34,7 +34,7 @@ async function fetchOrder(
         shippingAddress { name address1 city province zip phone }
         billingAddress { phone }
         totalWeight
-        lineItems(first: 50) { edges { node { title quantity requiresShipping weight { unit value } } } }
+        lineItems(first: 50) { edges { node { title quantity requiresShipping } } }
       }
     }
   `, { variables: { id: `gid://shopify/Order/${orderId}` } });
@@ -42,12 +42,13 @@ async function fetchOrder(
   return json.data?.order ?? null;
 }
 
-/** Peso total en gramos de los productos que se envían. */
+/**
+ * Peso total en gramos del pedido. LineItem.weight no existe desde la API
+ * 2026-01, y leerlo desde la variante exigiría el scope read_products, así que
+ * se usa Order.totalWeight (gramos), que Shopify ya calcula.
+ */
 function orderWeightGrams(order: ShopifyOrder): number {
-  const fromLines = order.lineItems.edges
-    .filter((e) => e.node.requiresShipping !== false)
-    .reduce((sum, e) => sum + weightToGrams(e.node.weight) * e.node.quantity, 0);
-  return fromLines || Number(order.totalWeight ?? 0);
+  return Number(order.totalWeight ?? 0);
 }
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
@@ -149,10 +150,9 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const dropoffAddress = { streetAddress: [order.shippingAddress.address1], city: order.shippingAddress.city, state: order.shippingAddress.province ?? order.shippingAddress.city, zipCode: order.shippingAddress.zip };
   const manifestItems = order.lineItems.edges
     .filter((e) => e.node.requiresShipping !== false)
-    .map((e) => {
-      const grams = weightToGrams(e.node.weight);
-      return { name: e.node.title, quantity: e.node.quantity, size: packageSize, ...(grams > 0 && { weight: grams }) };
-    });
+    // Sin peso por producto (ver orderWeightGrams): el peso es opcional para Uber,
+    // que usa el tamaño del paquete para elegir el vehículo.
+    .map((e) => ({ name: e.node.title, quantity: e.node.quantity, size: packageSize }));
   // Robo-courier de Uber (sandbox) SOLO para la tienda de review de Shopify.
   const testMode = isUberTestShop(session.shop);
   // Uber exige E.164; tiendas antiguas pueden tener el teléfono guardado sin formato.
