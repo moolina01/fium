@@ -275,6 +275,9 @@ export type QuoteRequest = {
   dropoffAddress: UberAddress;
   pickupLatLng?: LatLng;         // Recomendado en Chile
   dropoffLatLng?: LatLng;        // Recomendado en Chile
+  // EXPERIMENTO (solo tiendas de prueba): ver si Uber usa los productos/peso al cotizar.
+  manifestItems?: ManifestItem[];
+  manifestTotalValue?: number;
 };
 
 export type QuoteResult = {
@@ -305,6 +308,9 @@ export async function getDeliveryQuote(creds: UberCreds, req: QuoteRequest): Pro
     body.dropoff_latitude = req.dropoffLatLng.latitude;
     body.dropoff_longitude = req.dropoffLatLng.longitude;
   }
+
+  if (req.manifestItems?.length) body.manifest_items = req.manifestItems.map(toUberManifestItem);
+  if (req.manifestTotalValue != null) body.manifest_total_value = req.manifestTotalValue;
 
   const data = await uberFetch<Record<string, unknown>>(creds, "/delivery_quotes", {
     method: "POST",
@@ -389,6 +395,18 @@ export type DeliveryResult = {
   } | null;
 };
 
+function toUberManifestItem(item: ManifestItem) {
+  return {
+    name: item.name,
+    quantity: item.quantity,
+    size: item.size ?? "small",
+    ...(item.weight != null && { weight: item.weight }),
+    ...(item.price != null && { price: item.price }),
+    ...(item.dimensions && { dimensions: item.dimensions }),
+    ...(item.mustBeUpright != null && { must_be_upright: item.mustBeUpright }),
+  };
+}
+
 export async function createDelivery(
   creds: UberCreds,
   req: CreateDeliveryRequest
@@ -404,15 +422,7 @@ export async function createDelivery(
     dropoff_address: formatAddress(req.dropoffAddress),
     dropoff_phone_number: req.dropoffPhone,
     // Manifest
-    manifest_items: req.manifestItems.map((item) => ({
-      name: item.name,
-      quantity: item.quantity,
-      size: item.size ?? "small",
-      ...(item.weight != null && { weight: item.weight }),
-      ...(item.price != null && { price: item.price }),
-      ...(item.dimensions && { dimensions: item.dimensions }),
-      ...(item.mustBeUpright != null && { must_be_upright: item.mustBeUpright }),
-    })),
+    manifest_items: req.manifestItems.map(toUberManifestItem),
   };
 
   // Coordenadas opcionales

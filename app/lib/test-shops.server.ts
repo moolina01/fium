@@ -8,6 +8,9 @@
 // 👉 Cuando termine la review, quita el dominio de aquí (o deja la lista vacía).
 const TEST_SHOPS = new Set<string>([
   "pruebatienda111-uyzii5r3.myshopify.com",
+  // Tienda de pruebas de fium. Volvió al modo prueba para el experimento de peso
+  // (ver carrier.rates). Sacarla de aquí al terminar.
+  "fium-difinitiva.myshopify.com",
 ]);
 
 export function isUberTestShop(shop: string): boolean {
