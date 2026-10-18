@@ -18,17 +18,71 @@ const FULFILLMENT_EVENT_BY_STATUS: Record<string, FulfillmentEventStatus> = {
 
 type DeliveryRef = { id: string; shop: string; orderId: string; orderNumber: string; status: string };
 
+type LiveDelivery = {
+  status: string;
+  trackingUrl?: string | null;
+  pickupEta?: string | null;
+  dropoffEta?: string | null;
+  courier?: {
+    name: string;
+    phone: string;
+    vehicleType: string;
+    vehicleMake?: string;
+    vehicleModel?: string;
+    vehicleColor?: string;
+  } | null;
+};
+
+// Uber informa el color en inglés; se traducen los más comunes.
+const COLORS_ES: Record<string, string> = {
+  white: "blanco", black: "negro", silver: "plateado", gray: "gris", grey: "gris",
+  red: "rojo", blue: "azul", green: "verde", yellow: "amarillo", orange: "naranjo",
+  brown: "café", beige: "beige", gold: "dorado", purple: "morado",
+};
+const VEHICLE_TYPES_ES: Record<string, string> = {
+  car: "Auto", motorcycle: "Moto", scooter: "Moto", bicycle: "Bicicleta", walker: "A pie",
+};
+
+/** "Toyota Prius blanco", o el tipo de vehículo ("Moto") si Uber no da marca/modelo. */
+export function describeVehicle(courier: NonNullable<LiveDelivery["courier"]>): string | null {
+  const makeModel = [courier.vehicleMake, courier.vehicleModel].filter(Boolean).join(" ").trim();
+  if (makeModel) {
+    const color = courier.vehicleColor ? COLORS_ES[courier.vehicleColor.toLowerCase()] ?? courier.vehicleColor.toLowerCase() : "";
+    return [makeModel, color].filter(Boolean).join(" ");
+  }
+  return VEHICLE_TYPES_ES[courier.vehicleType?.toLowerCase()] ?? (courier.vehicleType || null);
+}
+
+function liveDetails(live: LiveDelivery) {
+  const toDate = (iso?: string | null) => (iso ? new Date(iso) : null);
+  return {
+    pickupEta: toDate(live.pickupEta),
+    dropoffEta: toDate(live.dropoffEta),
+    courierName: live.courier?.name || null,
+    courierPhone: live.courier?.phone || null,
+    courierVehicle: live.courier ? describeVehicle(live.courier) : null,
+    liveSyncedAt: new Date(),
+    ...(live.trackingUrl ? { uberTrackingUrl: live.trackingUrl } : {}),
+  };
+}
+
 /**
- * Aplica a un delivery el estado que reporta Uber (vía webhook o consultando la
- * API). Única implementación para el webhook, el dashboard y el detalle del envío.
- * Devuelve el estado con el que queda el delivery.
+ * Aplica a un delivery lo que reporta Uber (vía webhook o consultando la API):
+ * estado, ETA y conductor. Única implementación para el webhook, el dashboard y
+ * el detalle del envío. Devuelve el estado con el que queda el delivery.
  */
 export async function applyUberStatus(
   delivery: DeliveryRef,
-  live: { status: string; trackingUrl?: string | null },
+  live: LiveDelivery,
   context: string
 ): Promise<string> {
-  if (!VALID_STATUSES.includes(live.status) || live.status === delivery.status) return delivery.status;
+  const details = liveDetails(live);
+
+  if (!VALID_STATUSES.includes(live.status) || live.status === delivery.status) {
+    // Mismo estado: igual se guardan ETA/conductor, que cambian mientras avanza.
+    await db.delivery.update({ where: { id: delivery.id }, data: details });
+    return delivery.status;
+  }
 
   if (live.status === "canceled") {
     // Cancelado por la tienda: ya quedó "canceled" antes de llamar a Uber.
@@ -39,7 +93,7 @@ export async function applyUberStatus(
 
   await db.delivery.update({
     where: { id: delivery.id },
-    data: { status: live.status, ...(live.trackingUrl ? { uberTrackingUrl: live.trackingUrl } : {}) },
+    data: { status: live.status, ...details },
   });
 
   // Solo al entrar a un estado nuevo (ya filtrado arriba), para no duplicar eventos.

@@ -106,10 +106,10 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 const STATUS_MAP: Record<string, { label: string; color: string; description: string }> = {
-  pending: { label: "Esperando retiro", color: F.warning, description: "Uber Direct ya tiene el envío asignado y está buscando courier." },
-  pickup: { label: "Courier en camino a tu tienda", color: "#3B82F6", description: "El courier va en camino a retirar el pedido." },
-  pickup_complete: { label: "Paquete recogido", color: "#3B82F6", description: "El courier ya retiró el paquete y va en camino al cliente." },
-  dropoff: { label: "En entrega", color: F.brand, description: "El courier está en camino a entregar el pedido al cliente." },
+  pending: { label: "Buscando conductor", color: F.warning, description: "Uber Direct recibió el envío y está asignando un conductor." },
+  pickup: { label: "Va a tu tienda", color: "#3B82F6", description: "El conductor va en camino a retirar el pedido. Ten el paquete listo." },
+  pickup_complete: { label: "Retirado", color: "#3B82F6", description: "El conductor ya retiró el paquete y va camino al cliente." },
+  dropoff: { label: "Camino al cliente", color: F.brand, description: "El conductor está llegando donde el cliente." },
   delivered: { label: "Entregado", color: F.success, description: "El pedido fue entregado." },
   canceled: { label: "Cancelado", color: F.danger, description: "Este envío fue cancelado." },
   returned: { label: "Devuelto", color: F.danger, description: "El courier no pudo entregar y devolvió el paquete." },

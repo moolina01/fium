@@ -79,6 +79,15 @@ model Delivery {
   // Motivo de Uber cuando el auto-despacho falla (status "failed"), ej. el
   // mensaje de UberApiError. Null si nunca falló o si se despachó a mano.
   failureReason  String?
+  // Datos en vivo de Uber (ETA y conductor) para el panel "En curso". Se guardan
+  // aquí para consultar a Uber como mucho una vez cada 30 s por envío, sin
+  // importar cuántas personas tengan el panel abierto (ver liveSyncedAt).
+  pickupEta      DateTime?
+  dropoffEta     DateTime?
+  courierName    String?
+  courierPhone   String?
+  courierVehicle String?   // ej. "Toyota Prius blanco" o "Moto"
+  liveSyncedAt   DateTime? // Última consulta a Uber (webhook, panel o detalle)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 

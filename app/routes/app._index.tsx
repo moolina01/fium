@@ -8,7 +8,8 @@ import { getDelivery, cancelDelivery, getStoreUberCreds, type UberCreds } from "
 import { getSetupChecklist, type SetupChecklist } from "../lib/setup.server";
 import { saveUberCredentials } from "../lib/uber-credentials.server";
 import { logError } from "../lib/logger.server";
-import { applyUberStatus, UBER_CANCELED_REASON } from "../lib/delivery-status.server";
+import { applyUberStatus } from "../lib/delivery-status.server";
+import { Bike, Car, Motorbike, Phone } from "lucide-react";
 import { FONT } from "../lib/theme";
 import { CountUp } from "../components/CountUp";
 import { UberConnectCard } from "../components/setup/UberConnectCard";
@@ -27,7 +28,7 @@ type Order = {
   failureReason: string | null;
 };
 
-type ActiveDelivery = {
+type DeliveryBase = {
   id: string;
   orderNumber: string;
   customerName: string;
@@ -38,7 +39,16 @@ type ActiveDelivery = {
   timeAgo: string;
 };
 
-type HistoryDelivery = ActiveDelivery & { isDeliveredToday: boolean };
+// En curso: además, ETA y conductor guardados del último sync con Uber.
+type ActiveDelivery = DeliveryBase & {
+  pickupEta: string | null;  // ISO
+  dropoffEta: string | null; // ISO
+  courierName: string | null;
+  courierPhone: string | null;
+  courierVehicle: string | null;
+};
+
+type HistoryDelivery = DeliveryBase & { isDeliveredToday: boolean };
 
 function calcMinutesAgo(dateStr: string) {
   return Math.floor((Date.now() - new Date(dateStr).getTime()) / 60000);
@@ -101,13 +111,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     cursor = ordersData.pageInfo.endCursor;
   }
 
-  const deliveries = await db.delivery.findMany({ where: { shop: session.shop } });
+  let deliveries = await db.delivery.findMany({ where: { shop: session.shop } });
 
-  // Sync con Uber como respaldo de los webhooks (que dependen de que la tienda
-  // haya creado el webhook en su dashboard de Uber). El dashboard se recarga
-  // solo cada 30 s mientras hay envíos en curso, así que consultamos los que
-  // llevan >30 s sin actualizarse, como mucho 15 por carga.
-  const STALE_MS = 30 * 1000;
+  // Sync con Uber (estado, ETA y conductor) como respaldo de los webhooks. El
+  // panel se recarga cada 30 s mientras hay envíos en curso, pero cada envío se
+  // consulta a Uber como mucho una vez cada 30 s EN TOTAL — no por pestaña ni por
+  // usuario —, así las llamadas a Uber dependen solo de cuántos envíos hay en curso.
+  const SYNC_EVERY_MS = 30 * 1000;
   // Credenciales de Uber de la tienda — si aún no conectó su cuenta, no sincronizamos.
   let uberCreds: UberCreds | null = null;
   try {
@@ -115,28 +125,36 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   } catch {
     uberCreds = null;
   }
-  const nonTerminal = (uberCreds ? deliveries : [])
+  const cutoff = new Date(Date.now() - SYNC_EVERY_MS);
+  const due = (uberCreds ? deliveries : [])
     .filter(
-      (d: any) =>
-        !["delivered", "canceled", "returned"].includes(d.status) &&
+      (d) =>
+        !["delivered", "canceled", "returned", "failed"].includes(d.status) &&
         d.uberDeliveryId &&
-        Date.now() - new Date(d.updatedAt).getTime() > STALE_MS
+        (!d.liveSyncedAt || d.liveSyncedAt < cutoff)
     )
     .slice(0, 15);
-  await Promise.allSettled(
-    nonTerminal.map(async (d: any) => {
+  const synced = await Promise.allSettled(
+    due.map(async (d) => {
+      // Reservar el turno de forma atómica: si otra pestaña/usuario ya lo consultó
+      // en los últimos 30 s, count = 0 y no llamamos a Uber.
+      const claimed = await db.delivery.updateMany({
+        where: { id: d.id, OR: [{ liveSyncedAt: null }, { liveSyncedAt: { lt: cutoff } }] },
+        data: { liveSyncedAt: new Date() },
+      });
+      if (claimed.count === 0) return;
       try {
-        const live = await getDelivery(uberCreds!, d.uberDeliveryId);
-        const newStatus = await applyUberStatus(d, live, "dashboard/sync-delivery");
-        if (newStatus === "failed" && d.status !== "failed") d.failureReason = UBER_CANCELED_REASON;
-        d.status = newStatus;
-        if (live.trackingUrl) d.uberTrackingUrl = live.trackingUrl;
+        const live = await getDelivery(uberCreds!, d.uberDeliveryId!);
+        await applyUberStatus(d, live, "dashboard/sync-delivery");
       } catch (err) {
-        // Mantener el status cacheado si Uber no responde — no rompe el dashboard
+        // Mantener lo guardado si Uber no responde — no rompe el dashboard
         logError("dashboard/sync-delivery", err, { deliveryId: d.id });
       }
     })
   );
+  if (synced.length > 0) {
+    deliveries = await db.delivery.findMany({ where: { shop: session.shop } });
+  }
 
   // failed se excluye: la orden debe reaparecer en "Por despachar" para despacho manual
   const deliveredOrderIds = new Set(
@@ -192,6 +210,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       status: d.status,
       uberTrackingUrl: d.uberTrackingUrl ?? null,
       timeAgo: calcTimeAgo(d.createdAt.toString()),
+      pickupEta: d.pickupEta?.toISOString() ?? null,
+      dropoffEta: d.dropoffEta?.toISOString() ?? null,
+      courierName: d.courierName ?? null,
+      courierPhone: d.courierPhone ?? null,
+      courierVehicle: d.courierVehicle ?? null,
     }));
 
   // Historial — deliveries en estado terminal, más recientes primero
@@ -726,54 +749,75 @@ function OrderTable({ orders }: { orders: Order[] }) {
 }
 
 function DeliveryTable({ deliveries, highlightId }: { deliveries: ActiveDelivery[]; highlightId?: string | null }) {
+  const now = useNow(15_000);
   return (
-    <div style={{ ...T }}>
-      <div style={{
-        display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto auto",
-        padding: "8px 16px", borderBottom: "1px solid #f3f4f6",
-      }}>
-        {["Orden", "Cliente", "Dirección", "Estado", ""].map((h) => (
-          <div key={h} style={{ fontSize: "11px", fontWeight: "600", color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-            {h}
-          </div>
-        ))}
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: "10px", padding: "14px 0 4px", ...T }}>
       {deliveries.map((d, i) => (
-        <DeliveryRow key={d.id} d={d} delay={Math.min(i, 8) * 35} highlight={d.id === highlightId} />
+        <DeliveryRow key={d.id} d={d} now={now} delay={Math.min(i, 8) * 35} highlight={d.id === highlightId} />
       ))}
     </div>
   );
 }
 
-function DeliveryRow({ d, delay = 0, highlight = false }: { d: ActiveDelivery; delay?: number; highlight?: boolean }) {
+/** Hora actual que se refresca cada `everyMs`, para las cuentas regresivas. */
+function useNow(everyMs: number) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), everyMs);
+    return () => clearInterval(id);
+  }, [everyMs]);
+  return now;
+}
+
+function clockTime(iso: string) {
+  // Railway corre en UTC: sin timeZone explícito la hora sale corrida ~4 h.
+  return new Date(iso).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "America/Santiago" });
+}
+
+function minutesUntil(iso: string, now: number) {
+  return Math.round((new Date(iso).getTime() - now) / 60000);
+}
+
+// Pasos que ve la tienda. pickup_complete y dropoff son el mismo paso para ella:
+// el paquete ya salió y va camino al cliente.
+const DELIVERY_STEPS = ["Buscando conductor", "Va a tu tienda", "Camino al cliente", "Entregado"];
+const STEP_BY_STATUS: Record<string, number> = { pending: 0, pickup: 1, pickup_complete: 2, dropoff: 2, delivered: 3 };
+
+function DeliveryRow({ d, now, delay = 0, highlight = false }: { d: ActiveDelivery; now: number; delay?: number; highlight?: boolean }) {
   const fetcher = useFetcher<{ error?: string; ok?: boolean }>();
   const [confirming, setConfirming] = useState(false);
   const busy = fetcher.state !== "idle";
   const canCancel = !["delivered", "canceled", "returned"].includes(d.status);
+  const step = STEP_BY_STATUS[d.status] ?? 0;
+
+  // El conductor está por llegar (o ya llegó) a retirar: lo más importante para la tienda.
+  const pickupMin = d.status === "pickup" && d.pickupEta ? minutesUntil(d.pickupEta, now) : null;
+  const arriving = pickupMin !== null && pickupMin <= 3;
 
   return (
-    <div className={highlight ? "fu-row fu-just-dispatched" : "fu-row"} style={{
-      display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto auto",
-      alignItems: "center", padding: "13px 16px",
-      borderBottom: "1px solid #f9fafb", background: "white",
-      // La fila resaltada usa su propia animación (no se combinan dos `animation`).
-      ...(highlight ? {} : fu(delay)),
-    }}>
-      <div>
-        <Link
-          to={`/app/deliveries/${d.id}`}
-          style={{ fontSize: "14px", fontWeight: "600", color: "#4B2BE0", textDecoration: "none" }}
-        >
-          {d.orderNumber}
-        </Link>
-        <span style={{ fontSize: "12px", color: "#9ca3af", marginLeft: "8px" }}>{d.timeAgo}</span>
-      </div>
-      <div style={{ fontSize: "13px", color: "#374151" }}>{d.customerName}</div>
-      <div style={{ fontSize: "13px", color: "#6b7280" }}>{d.customerAddress}, {d.customerComuna}</div>
-      <div style={{ paddingRight: "16px" }}>
-        <StatusDot status={d.status} />
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "4px" }}>
+    <div
+      className={highlight ? "fu-just-dispatched" : undefined}
+      style={{
+        border: `1px solid ${arriving ? "#C9F03C" : "#E4E2F0"}`,
+        borderRadius: "12px", background: "white", overflow: "hidden",
+        ...(highlight ? {} : fu(delay)),
+      }}
+    >
+      {/* Encabezado: orden, cliente y acciones */}
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px", padding: "14px 16px 0" }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: "8px", flexWrap: "wrap" }}>
+            <Link to={`/app/deliveries/${d.id}`} style={{ fontSize: "15px", fontWeight: 700, color: "#4B2BE0", textDecoration: "none" }}>
+              {d.orderNumber}
+            </Link>
+            <span style={{ fontSize: "14px", fontWeight: 600, color: "#241266" }}>{d.customerName}</span>
+            <span style={{ fontSize: "12px", color: "#9ca3af" }}>· despachado {d.timeAgo}</span>
+          </div>
+          <div style={{ fontSize: "13px", color: "#6E6B85", marginTop: "2px" }}>
+            {d.customerAddress}, {d.customerComuna}
+          </div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "4px", flexShrink: 0 }}>
         <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
           {d.uberTrackingUrl && (
             <a
@@ -830,9 +874,115 @@ function DeliveryRow({ d, delay = 0, highlight = false }: { d: ActiveDelivery; d
         {fetcher.data?.error && (
           <span style={{ fontSize: "11px", color: "#DC2626" }}>{fetcher.data.error}</span>
         )}
+        </div>
+      </div>
+
+      {/* Progreso */}
+      <DeliveryStepper step={step} />
+
+      {/* Lo que la tienda necesita saber ahora: quién viene y cuándo */}
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap",
+        padding: "12px 16px", borderTop: `1px solid ${arriving ? "#C9F03C" : "#F0EEF7"}`,
+        background: arriving ? "#F4FBDD" : "#F6F5FB",
+      }}>
+        {d.status === "pending" ? (
+          <span style={{ fontSize: "13px", color: "#6E6B85" }}>
+            Uber está asignando un conductor. Aquí verás quién viene y a qué hora.
+          </span>
+        ) : (
+          <CourierInfo d={d} />
+        )}
+        <EtaInfo d={d} now={now} pickupMin={pickupMin} arriving={arriving} />
       </div>
     </div>
   );
+}
+
+function DeliveryStepper({ step }: { step: number }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: `repeat(${DELIVERY_STEPS.length}, 1fr)`, gap: "6px", padding: "14px 16px" }}>
+      {DELIVERY_STEPS.map((label, i) => {
+        const done = i < step;
+        const current = i === step;
+        return (
+          <div key={label} style={{ display: "flex", flexDirection: "column", gap: "6px", minWidth: 0 }}>
+            <div style={{
+              height: "4px", borderRadius: "99px",
+              background: done || current ? "#4B2BE0" : "#E4E2F0",
+              opacity: current ? 1 : done ? 0.45 : 1,
+            }} />
+            <span style={{
+              fontSize: "12px", fontWeight: current ? 600 : 500,
+              color: current ? "#241266" : done ? "#6E6B85" : "#B4B1C6",
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+            }}>
+              {label}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CourierInfo({ d }: { d: ActiveDelivery }) {
+  if (!d.courierName) {
+    return <span style={{ fontSize: "13px", color: "#6E6B85" }}>Conductor asignado</span>;
+  }
+  const vehicle = d.courierVehicle ?? "";
+  const VehicleIcon = /moto/i.test(vehicle) ? Motorbike : /bicicleta/i.test(vehicle) ? Bike : Car;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
+      <span style={{
+        width: "32px", height: "32px", borderRadius: "50%", background: "white", border: "1px solid #E4E2F0",
+        display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0, color: "#4B2BE0",
+      }}>
+        <VehicleIcon size={16} strokeWidth={1.75} aria-hidden="true" />
+      </span>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: "13px", fontWeight: 600, color: "#241266" }}>{d.courierName}</div>
+        <div style={{ fontSize: "12px", color: "#6E6B85" }}>
+          {d.courierVehicle}
+          {d.courierPhone && (
+            <>
+              {d.courierVehicle ? " · " : ""}
+              <a href={`tel:${d.courierPhone}`} style={{ color: "#4B2BE0", textDecoration: "none", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                <Phone size={11} strokeWidth={2.25} aria-hidden="true" /> {d.courierPhone}
+              </a>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EtaInfo({ d, now, pickupMin, arriving }: { d: ActiveDelivery; now: number; pickupMin: number | null; arriving: boolean }) {
+  if (d.status === "pickup" && d.pickupEta && pickupMin !== null) {
+    return (
+      <div style={{ textAlign: "right" }}>
+        <div suppressHydrationWarning style={{ fontSize: "15px", fontWeight: 700, color: "#241266", fontFamily: "Sora, sans-serif" }}>
+          {arriving ? "Está llegando" : `Llega en ${pickupMin} min`}
+        </div>
+        <div style={{ fontSize: "12px", color: arriving ? "#241266" : "#6E6B85" }}>
+          {arriving ? "Ten el paquete listo para entregarlo" : `a tu tienda · ${clockTime(d.pickupEta)}`}
+        </div>
+      </div>
+    );
+  }
+  if ((d.status === "pickup_complete" || d.status === "dropoff") && d.dropoffEta) {
+    const min = minutesUntil(d.dropoffEta, now);
+    return (
+      <div style={{ textAlign: "right" }}>
+        <div suppressHydrationWarning style={{ fontSize: "15px", fontWeight: 700, color: "#241266", fontFamily: "Sora, sans-serif" }}>
+          {min > 0 ? `Entrega en ${min} min` : "Entregando"}
+        </div>
+        <div style={{ fontSize: "12px", color: "#6E6B85" }}>al cliente · {clockTime(d.dropoffEta)}</div>
+      </div>
+    );
+  }
+  return null;
 }
 
 function HistoryTable({ deliveries }: { deliveries: HistoryDelivery[] }) {
@@ -924,10 +1074,10 @@ function HistoryRow({ d, delay = 0 }: { d: HistoryDelivery; delay?: number }) {
 
 function StatusDot({ status }: { status: string }) {
   const map: Record<string, { label: string; color: string }> = {
-    pending:         { label: "Esperando retiro", color: "#EF9F27" },
-    pickup:          { label: "Courier en camino", color: "#3B82F6" },
-    pickup_complete: { label: "Paquete recogido",  color: "#3B82F6" },
-    dropoff:         { label: "En entrega",        color: "#4B2BE0" },
+    pending:         { label: "Buscando conductor", color: "#EF9F27" },
+    pickup:          { label: "Va a tu tienda",    color: "#3B82F6" },
+    pickup_complete: { label: "Retirado",          color: "#3B82F6" },
+    dropoff:         { label: "Camino al cliente", color: "#4B2BE0" },
     delivered:       { label: "Entregado",         color: "#1D9E75" },
     canceled:        { label: "Cancelado",         color: "#DC2626" },
     returned:        { label: "Devuelto",          color: "#DC2626" },

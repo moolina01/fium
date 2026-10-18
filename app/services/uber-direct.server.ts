@@ -381,6 +381,9 @@ export type DeliveryResult = {
     name: string;
     phone: string;
     vehicleType: string;
+    vehicleMake: string;          // ej. "Toyota" (vacío si Uber no lo informa)
+    vehicleModel: string;         // ej. "Prius"
+    vehicleColor: string;         // ej. "White"
     imgHref: string;
     location: LatLng | null;
   } | null;
@@ -523,6 +526,9 @@ function mapDeliveryResponse(data: Record<string, unknown>): DeliveryResult {
           name: (courier.name as string) ?? "",
           phone: (courier.phone_number as string) ?? "",
           vehicleType: (courier.vehicle_type as string) ?? "",
+          vehicleMake: (courier.vehicle_make as string) ?? "",
+          vehicleModel: (courier.vehicle_model as string) ?? "",
+          vehicleColor: (courier.vehicle_color as string) ?? "",
           imgHref: (courier.img_href as string) ?? "",
           location: courierLocation
             ? {
