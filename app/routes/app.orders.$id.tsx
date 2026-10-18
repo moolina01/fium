@@ -189,7 +189,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   // Borrar cualquier registro fallido previo del auto-despacho
   await db.delivery.deleteMany({ where: { orderId: order.id, shop: session.shop, status: "failed" } });
 
-  await db.delivery.create({
+  const created = await db.delivery.create({
     data: {
       shop: session.shop,
       orderId: order.id,
@@ -208,7 +208,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   // "Por gestionar" y avisa al cliente. No bloquea el flujo si falla.
   await fulfillOrderWithTracking(admin, order.id, delivery.trackingUrl, "orders/manual-fulfill");
 
-  throw redirect("/app");
+  // El dashboard usa ?despachado=<id> para animar el paso a "En curso" y resaltar el envío.
+  throw redirect(`/app?despachado=${created.id}`);
 };
 
 export default function OrderDetail() {

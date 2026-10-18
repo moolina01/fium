@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Link, useFetcher, useLoaderData } from "react-router";
+import { Link, useFetcher, useLoaderData, useRevalidator, useSearchParams } from "react-router";
 import { authenticate, registerCarrierService } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import db from "../db.server";
@@ -8,7 +8,7 @@ import { getDelivery, cancelDelivery, getStoreUberCreds, type UberCreds } from "
 import { getSetupChecklist, type SetupChecklist } from "../lib/setup.server";
 import { saveUberCredentials } from "../lib/uber-credentials.server";
 import { logError } from "../lib/logger.server";
-import { handleUberCancellation, UBER_CANCELED_REASON } from "../lib/delivery-status.server";
+import { applyUberStatus, UBER_CANCELED_REASON } from "../lib/delivery-status.server";
 import { FONT } from "../lib/theme";
 import { CountUp } from "../components/CountUp";
 import { UberConnectCard } from "../components/setup/UberConnectCard";
@@ -103,12 +103,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const deliveries = await db.delivery.findMany({ where: { shop: session.shop } });
 
-  // Sync con Uber SOLO como fallback de webhooks: los webhooks de Uber ya
-  // actualizan el estado (y el updatedAt) en tiempo real, así que un delivery
-  // refrescado hace poco no necesita consultarse. Solo sincronizamos los
-  // "obsoletos" (sin actualizar en >5 min) y como mucho 15, para que el loader
-  // no haga decenas de llamadas a Uber en cada carga.
-  const STALE_MS = 5 * 60 * 1000;
+  // Sync con Uber como respaldo de los webhooks (que dependen de que la tienda
+  // haya creado el webhook en su dashboard de Uber). El dashboard se recarga
+  // solo cada 30 s mientras hay envíos en curso, así que consultamos los que
+  // llevan >30 s sin actualizarse, como mucho 15 por carga.
+  const STALE_MS = 30 * 1000;
   // Credenciales de Uber de la tienda — si aún no conectó su cuenta, no sincronizamos.
   let uberCreds: UberCreds | null = null;
   try {
@@ -128,22 +127,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     nonTerminal.map(async (d: any) => {
       try {
         const live = await getDelivery(uberCreds!, d.uberDeliveryId);
-        if (live.status === "canceled") {
-          // Uber canceló por su cuenta (respaldo por si no llegó el webhook).
-          await handleUberCancellation(d, "dashboard/sync-delivery");
-          d.status = "failed";
-          d.failureReason = UBER_CANCELED_REASON;
-        } else if (live.status !== d.status) {
-          await db.delivery.update({
-            where: { id: d.id },
-            data: {
-              status: live.status,
-              ...(live.trackingUrl ? { uberTrackingUrl: live.trackingUrl } : {}),
-            },
-          });
-          d.status = live.status;
-          if (live.trackingUrl) d.uberTrackingUrl = live.trackingUrl;
-        }
+        const newStatus = await applyUberStatus(d, live, "dashboard/sync-delivery");
+        if (newStatus === "failed" && d.status !== "failed") d.failureReason = UBER_CANCELED_REASON;
+        d.status = newStatus;
+        if (live.trackingUrl) d.uberTrackingUrl = live.trackingUrl;
       } catch (err) {
         // Mantener el status cacheado si Uber no responde — no rompe el dashboard
         logError("dashboard/sync-delivery", err, { deliveryId: d.id });
@@ -321,6 +308,21 @@ const GLOBAL_CSS = `
 .fu-tab:hover { color: #4B2BE0; }
 .fu-tile { cursor: pointer; transition: background 0.15s ease; text-align: left; border: none; }
 .fu-tile:hover { background: #fafafb; }
+@keyframes fuJustDispatched {
+  0%   { background: #EEEDFE; box-shadow: inset 3px 0 0 #4B2BE0; }
+  70%  { background: #EEEDFE; box-shadow: inset 3px 0 0 #4B2BE0; }
+  100% { background: #FFFFFF; box-shadow: inset 3px 0 0 transparent; }
+}
+@keyframes fuBadgePop {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(1.35); }
+  100% { transform: scale(1); }
+}
+.fu-just-dispatched { animation: fuJustDispatched 2.8s ease-out 0.25s both; }
+.fu-badge-pop { animation: fuBadgePop 0.45s cubic-bezier(0.22,1,0.36,1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .fu-just-dispatched, .fu-badge-pop { animation: none; }
+}
 `;
 
 function fu(delay = 0, duration = 380): React.CSSProperties {
@@ -330,6 +332,10 @@ function fu(delay = 0, duration = 380): React.CSSProperties {
 export default function Index() {
   const data = useLoaderData<typeof loader>();
   const [tab, setTab] = useState<"pending" | "confirmed" | "history">("pending");
+  // Recién despachado desde el detalle de la orden (?despachado=<id>): se muestra
+  // un instante "Por despachar" y luego se salta a "En curso" con la fila resaltada.
+  const [searchParams] = useSearchParams();
+  const [justDispatchedId, setJustDispatchedId] = useState<string | null>(searchParams.get("despachado"));
   // Filtros que se activan al hacer clic en un tile de métricas, para saltar
   // directo a "esos" pedidos en vez de tener que buscarlos a mano en la tabla.
   const [pendingFilter, setPendingFilter] = useState<"all" | "problems">("all");
@@ -342,6 +348,42 @@ export default function Index() {
   const visibleHistory = historyFilter === "today"
     ? history.filter((d) => d.isDeliveredToday)
     : history;
+
+  useEffect(() => {
+    if (!justDispatchedId) return;
+    const dispatched = data.activeDeliveries.find((d) => d.id === justDispatchedId);
+    // Quitar el parámetro sin recargar (evita que se repita al refrescar y no
+    // vuelve a correr el loader, que consulta a Uber).
+    const url = new URL(window.location.href);
+    url.searchParams.delete("despachado");
+    window.history.replaceState(window.history.state, "", url.toString());
+
+    const toTab = setTimeout(() => {
+      setTab("confirmed");
+      if (dispatched) {
+        (window as { shopify?: { toast?: { show: (m: string) => void } } }).shopify?.toast?.show(
+          `Envío ${dispatched.orderNumber} creado`
+        );
+      }
+    }, 450);
+    const clear = setTimeout(() => setJustDispatchedId(null), 3600);
+    return () => { clearTimeout(toTab); clearTimeout(clear); };
+    // Solo al llegar con el parámetro.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Mientras haya envíos en curso, recargar los datos cada 30 s para que el
+  // estado avance solo (el loader consulta a Uber los envíos desactualizados).
+  // Se pausa con la pestaña oculta para no gastar llamadas a Uber.
+  const revalidator = useRevalidator();
+  const hasActive = activeDeliveries.length > 0;
+  useEffect(() => {
+    if (!hasActive) return;
+    const id = setInterval(() => {
+      if (document.visibilityState === "visible" && revalidator.state === "idle") revalidator.revalidate();
+    }, 30_000);
+    return () => clearInterval(id);
+  }, [hasActive, revalidator]);
 
   function goToTab(key: "pending" | "confirmed" | "history") {
     setTab(key);
@@ -441,7 +483,8 @@ export default function Index() {
               }}
             >
               {label}
-              <span style={{
+              <span className={key === "confirmed" && justDispatchedId && tab === "confirmed" ? "fu-badge-pop" : undefined} style={{
+                display: "inline-block",
                 background: tab === key ? "#EEEDFE" : "#f3f4f6",
                 color: tab === key ? "#4B2BE0" : "#9ca3af",
                 fontSize: "11px", fontWeight: "700",
@@ -478,7 +521,7 @@ export default function Index() {
                   title="No hay envíos en curso"
                   text="Los envíos que despaches aparecerán aquí con su estado en tiempo real, desde que el courier los retira hasta la entrega."
                 />
-              : <DeliveryTable deliveries={activeDeliveries} />
+              : <DeliveryTable deliveries={activeDeliveries} highlightId={justDispatchedId} />
           )}
           {tab === "history" && (
             <>
@@ -682,7 +725,7 @@ function OrderTable({ orders }: { orders: Order[] }) {
   );
 }
 
-function DeliveryTable({ deliveries }: { deliveries: ActiveDelivery[] }) {
+function DeliveryTable({ deliveries, highlightId }: { deliveries: ActiveDelivery[]; highlightId?: string | null }) {
   return (
     <div style={{ ...T }}>
       <div style={{
@@ -695,23 +738,26 @@ function DeliveryTable({ deliveries }: { deliveries: ActiveDelivery[] }) {
           </div>
         ))}
       </div>
-      {deliveries.map((d, i) => <DeliveryRow key={d.id} d={d} delay={Math.min(i, 8) * 35} />)}
+      {deliveries.map((d, i) => (
+        <DeliveryRow key={d.id} d={d} delay={Math.min(i, 8) * 35} highlight={d.id === highlightId} />
+      ))}
     </div>
   );
 }
 
-function DeliveryRow({ d, delay = 0 }: { d: ActiveDelivery; delay?: number }) {
+function DeliveryRow({ d, delay = 0, highlight = false }: { d: ActiveDelivery; delay?: number; highlight?: boolean }) {
   const fetcher = useFetcher<{ error?: string; ok?: boolean }>();
   const [confirming, setConfirming] = useState(false);
   const busy = fetcher.state !== "idle";
   const canCancel = !["delivered", "canceled", "returned"].includes(d.status);
 
   return (
-    <div className="fu-row" style={{
+    <div className={highlight ? "fu-row fu-just-dispatched" : "fu-row"} style={{
       display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto auto",
       alignItems: "center", padding: "13px 16px",
       borderBottom: "1px solid #f9fafb", background: "white",
-      ...fu(delay),
+      // La fila resaltada usa su propia animación (no se combinan dos `animation`).
+      ...(highlight ? {} : fu(delay)),
     }}>
       <div>
         <Link

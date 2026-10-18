@@ -24,6 +24,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     uberConnected,
     // Última vez que Shopify pidió tarifas a Fium en el checkout (ISO o null).
     carrierLiveAt: config?.lastRateRequestAt?.toISOString() ?? null,
+    // URL que la tienda pega al crear el webhook en su dashboard de Uber Direct.
+    uberWebhookUrl: `${process.env.SHOPIFY_APP_URL ?? ""}/webhooks/uber/delivery`,
+    // Último aviso de Uber recibido (ISO o null): confirma que el webhook funciona.
+    uberWebhookLiveAt: config?.lastUberWebhookAt?.toISOString() ?? null,
   };
 };
 
@@ -92,7 +96,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 const F = { fontFamily: FONT };
 
 export default function Settings() {
-  const { config, carrierRegistered, carrierLiveAt, uberConnected } = useLoaderData<typeof loader>();
+  const { config, carrierRegistered, carrierLiveAt, uberConnected, uberWebhookUrl, uberWebhookLiveAt } = useLoaderData<typeof loader>();
+  const [copied, setCopied] = useState(false);
+  function copyWebhookUrl() {
+    navigator.clipboard?.writeText(uberWebhookUrl).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {});
+  }
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const saving = navigation.state === "submitting";
@@ -185,6 +196,65 @@ export default function Settings() {
             </Form>
           </div>
         </div>
+
+        {/* 1b. Avisos de Uber (webhook). Uber no permite crearlo por API: la tienda lo
+            crea en su dashboard. Sin esto el estado igual avanza (el dashboard consulta
+            a Uber), pero solo mientras alguien tiene Fium abierto. */}
+        {uberConnected && (
+          <div style={{
+            background: "white", borderRadius: "10px", overflow: "hidden", marginBottom: "12px",
+            border: uberWebhookLiveAt ? "1px solid #e5e7eb" : "2px solid #4B2BE0", ...F,
+          }}>
+            <div style={{
+              padding: "16px 20px", borderBottom: "1px solid #f3f4f6",
+              display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px",
+            }}>
+              <div>
+                <div style={{ fontSize: "14px", fontWeight: "600", color: "#111827" }}>Avisos de estado de Uber</div>
+                <div style={{ fontSize: "12px", color: "#9ca3af", marginTop: "1px" }}>
+                  Para que el estado de tus envíos y de tus pedidos en Shopify se actualice al instante
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
+                <span style={{
+                  width: "7px", height: "7px", borderRadius: "50%", display: "inline-block",
+                  background: uberWebhookLiveAt ? "#1D9E75" : "#EF9F27",
+                }} />
+                <span style={{ fontSize: "12px", fontWeight: "600", color: uberWebhookLiveAt ? "#1D9E75" : "#B45309" }}>
+                  {uberWebhookLiveAt ? `Recibiendo avisos · ${relTime(uberWebhookLiveAt)}` : "Sin avisos todavía"}
+                </span>
+              </div>
+            </div>
+            <div style={{ padding: "20px", fontSize: "13px", color: "#374151", lineHeight: 1.7 }}>
+              <ol style={{ margin: "0 0 14px", paddingLeft: "18px" }}>
+                <li>Entra a <strong>direct.uber.com</strong> → <strong>Desarrollador</strong> → pestaña <strong>Webhooks</strong>.</li>
+                <li>Haz clic en <strong>Crear webhook</strong> y pega esta URL:</li>
+              </ol>
+              <div style={{ display: "flex", gap: "8px", marginBottom: "14px" }}>
+                <input readOnly value={uberWebhookUrl} onFocus={(e) => e.currentTarget.select()} style={{ ...inp, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: "12px" }} />
+                <button
+                  type="button"
+                  onClick={copyWebhookUrl}
+                  style={{
+                    flexShrink: 0, padding: "0 16px", borderRadius: "8px", cursor: "pointer",
+                    border: "1px solid #4B2BE0", background: copied ? "#EEEDFE" : "white",
+                    color: "#4B2BE0", fontSize: "13px", fontWeight: "600", ...F,
+                  }}
+                >
+                  {copied ? "Copiada" : "Copiar"}
+                </button>
+              </div>
+              <ol start={3} style={{ margin: 0, paddingLeft: "18px" }}>
+                <li>En los tipos de eventos marca solo <strong>event.delivery_status</strong> y haz clic en <strong>Guardar</strong>.</li>
+              </ol>
+              <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "12px" }}>
+                {uberWebhookLiveAt
+                  ? "Todo listo: Uber ya está avisando a Fium cada vez que cambia el estado de un envío."
+                  : "Este indicador se pone en verde con el primer envío que cambie de estado. Mientras tanto, Fium consulta a Uber cada vez que abres el panel de envíos."}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* 2. Carrier service — prominente hasta que esté realmente activo en el checkout */}
         <div style={{

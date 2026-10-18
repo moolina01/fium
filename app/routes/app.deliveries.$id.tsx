@@ -5,7 +5,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getDelivery, cancelDelivery, getStoreUberCreds } from "../services/uber-direct.server";
 import { logError } from "../lib/logger.server";
-import { handleUberCancellation, UBER_CANCELED_REASON } from "../lib/delivery-status.server";
+import { applyUberStatus, UBER_CANCELED_REASON } from "../lib/delivery-status.server";
 import { colors as F, FONT, DISPLAY_FONT } from "../lib/theme";
 
 function formatEta(iso: string | null | undefined) {
@@ -40,17 +40,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     try {
       const creds = await getStoreUberCreds(session.shop);
       live = await getDelivery(creds, delivery.uberDeliveryId);
-      if (live.status === "canceled") {
-        // Uber canceló por su cuenta (respaldo por si no llegó el webhook).
-        await handleUberCancellation(delivery, "deliveries/detail");
-        delivery.status = "failed";
-        delivery.failureReason = UBER_CANCELED_REASON;
-      } else if (live.status !== delivery.status) {
-        await db.delivery.update({
-          where: { id: delivery.id },
-          data: { status: live.status, ...(live.trackingUrl ? { uberTrackingUrl: live.trackingUrl } : {}) },
-        });
-      }
+      const newStatus = await applyUberStatus(delivery, live, "deliveries/detail");
+      if (newStatus === "failed" && delivery.status !== "failed") delivery.failureReason = UBER_CANCELED_REASON;
+      delivery.status = newStatus;
+      if (live.trackingUrl) delivery.uberTrackingUrl = live.trackingUrl;
     } catch (e) {
       logError("deliveries/detail", e, { deliveryId });
       liveError = "No se pudo consultar el estado en vivo de Uber Direct. Mostrando el último estado guardado.";
@@ -64,7 +57,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       customerName: delivery.customerName,
       customerAddress: delivery.customerAddress,
       customerComuna: delivery.customerComuna,
-      status: live?.status ?? delivery.status,
+      status: delivery.status, // ya actualizado con applyUberStatus
       uberTrackingUrl: live?.trackingUrl || delivery.uberTrackingUrl,
       quoteAmount: delivery.quoteAmount,
       failureReason: delivery.failureReason,

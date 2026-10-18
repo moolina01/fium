@@ -1,7 +1,6 @@
 import db from "../db.server";
 import { encrypt, decrypt } from "./crypto.server";
 import { testUberConnection } from "../services/uber-direct.server";
-import { ensureUberWebhookForShop } from "../shopify.server";
 import { logError } from "./logger.server";
 
 /**
@@ -50,9 +49,6 @@ export async function saveUberCredentials(
     where: { shop },
     data: { uberClientId, uberClientSecret: encrypt(secretPlain), uberCustomerId },
   });
-
-  // Registrar el webhook de Uber para esta tienda (no bloquea si falla).
-  await ensureUberWebhookForShop(shop);
 
   return { success: true };
 }

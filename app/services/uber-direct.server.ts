@@ -498,68 +498,10 @@ export async function getProofOfDelivery(
 }
 
 // ─── WEBHOOKS ────────────────────────────────────────────────────────────────
-// POST /v1/customers/{customer_id}/webhooks
-// Uber envía un POST a la URL registrada con cada cambio de estado.
-// El header X-Postmates-Signature contiene HMAC-SHA256(client_secret, raw_body).
-
-export type UberWebhookEvent = {
-  event_id: string;
-  event_type: string;
-  customer_id: string;
-  data: {
-    id: string;
-    status: string;
-    tracking_url?: string;
-    courier?: Record<string, unknown>;
-    pickup_eta?: string;
-    dropoff_eta?: string;
-  };
-  created: string;
-};
-
-export async function registerUberWebhook(creds: UberCreds, callbackUrl: string): Promise<void> {
-  await uberFetch(creds, "/webhooks", {
-    method: "POST",
-    body: {
-      url: callbackUrl,
-      event_types: ["delivery.status.changed"],
-    },
-  });
-}
-
-export async function listUberWebhooks(creds: UberCreds): Promise<{ id: string; url: string }[]> {
-  const data = await uberFetch<{ data: { id: string; url: string }[] }>(creds, "/webhooks");
-  return data?.data ?? [];
-}
-
-export async function deleteUberWebhook(creds: UberCreds, webhookId: string): Promise<void> {
-  await uberFetch(creds, `/webhooks/${webhookId}`, { method: "DELETE" });
-}
-
-/**
- * Verifica la firma HMAC-SHA256 de Uber con el client_secret de la tienda.
- * Retorna true si es válida. El webhook llega sin identificar la tienda, así que
- * el caller resuelve primero qué tienda es (por customer_id) y pasa su secret.
- */
-export async function verifyUberSignature(
-  clientSecret: string,
-  rawBody: string,
-  signature: string | null
-): Promise<boolean> {
-  if (!clientSecret || !signature) return false;
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(clientSecret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(rawBody));
-  const expected = Array.from(new Uint8Array(mac))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-  return expected === signature;
-}
+// Uber Direct NO permite registrar webhooks por API: cada tienda lo crea en su
+// dashboard (direct.uber.com → Desarrollador → Webhooks, evento event.delivery_status).
+// El handler (routes/webhooks.uber.delivery.tsx) usa el aviso solo como
+// disparador y lee el estado real con getDelivery().
 
 // ─── Response mapper ────────────────────────────────────────────────────────
 

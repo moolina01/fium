@@ -6,8 +6,6 @@ import {
 } from "@shopify/shopify-app-react-router/server";
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import prisma from "./db.server";
-import { listUberWebhooks, deleteUberWebhook, registerUberWebhook, getStoreUberCreds } from "./services/uber-direct.server";
-import { logError } from "./lib/logger.server";
 
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY,
@@ -24,8 +22,6 @@ const shopify = shopifyApp({
   hooks: {
     afterAuth: async ({ session }) => {
       console.log("[afterAuth] disparado para shop:", session.shop);
-      // El webhook de Uber se registra por tienda cuando conecta su cuenta
-      // (al guardar credenciales en Settings), no aquí — aquí aún no las tiene.
       await registerCarrierService(session.shop, session.accessToken!);
     },
   },
@@ -33,32 +29,6 @@ const shopify = shopifyApp({
     ? { customShopDomains: [process.env.SHOP_CUSTOM_DOMAIN] }
     : {}),
 });
-
-/**
- * Registra el webhook de Uber Direct en la cuenta de UNA tienda. Se llama cuando
- * la tienda conecta/actualiza sus credenciales en Settings. El callback es el
- * mismo para todas las tiendas; cada evento se identifica por su customer_id.
- */
-export async function ensureUberWebhookForShop(shop: string): Promise<void> {
-  const appUrl = process.env.SHOPIFY_APP_URL;
-  if (!appUrl) return;
-  try {
-    const creds = await getStoreUberCreds(shop);
-    const callbackUrl = `${appUrl}/webhooks/uber/delivery`;
-    const existing = await listUberWebhooks(creds);
-    for (const wh of existing) {
-      if (wh.url !== callbackUrl) await deleteUberWebhook(creds, wh.id);
-    }
-    if (!existing.some((w) => w.url === callbackUrl)) {
-      await registerUberWebhook(creds, callbackUrl);
-      console.log("[uber-webhook] registrado para", shop, callbackUrl);
-    } else {
-      console.log("[uber-webhook] ya existe para", shop);
-    }
-  } catch (e) {
-    logError("shopify/ensure-uber-webhook", e, { shop });
-  }
-}
 
 export async function registerCarrierService(shop: string, accessToken: string) {
   const appUrl = process.env.SHOPIFY_APP_URL!;

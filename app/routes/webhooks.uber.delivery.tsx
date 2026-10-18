@@ -1,68 +1,41 @@
 import type { ActionFunctionArgs } from "react-router";
 import db from "../db.server";
-import { unauthenticated } from "../shopify.server";
-import { verifyUberSignature, type UberWebhookEvent } from "../services/uber-direct.server";
-import { decrypt } from "../lib/crypto.server";
-import { logError, logDebug } from "../lib/logger.server";
-import { addFulfillmentEvent, type FulfillmentEventStatus } from "../lib/fulfillment.server";
-import { handleUberCancellation } from "../lib/delivery-status.server";
+import { getDelivery, uberCredsFromConfig } from "../services/uber-direct.server";
+import { logError, logDebug, logInfo } from "../lib/logger.server";
+import { applyUberStatus } from "../lib/delivery-status.server";
 
-const VALID_STATUSES = ["pending", "pickup", "pickup_complete", "dropoff", "delivered", "canceled", "returned"];
-
-// Mapea los estados de Uber a eventos de fulfillment de Shopify, para que la
-// línea de tiempo del pedido refleje el avance del envío.
-const FULFILLMENT_EVENT_BY_STATUS: Record<string, FulfillmentEventStatus> = {
-  pickup_complete: "IN_TRANSIT",
-  dropoff: "OUT_FOR_DELIVERY",
-  delivered: "DELIVERED",
+// Webhook "Delivery Status" de Uber Direct (kind: "event.delivery_status").
+// Cada tienda lo crea en su dashboard de Uber (direct.uber.com → Desarrollador →
+// Webhooks, evento event.delivery_status) apuntando a esta URL; Uber no permite registrarlo por API.
+//
+// El aviso se usa solo como DISPARADOR: el estado se lee de la API de Uber con
+// las credenciales de la tienda. Así no hace falta la "Webhook Signing Key" de
+// cada tienda, y un aviso falso no puede cambiar nada (solo provoca una consulta).
+type UberStatusEvent = {
+  kind?: string;
+  customer_id?: string;
+  delivery_id?: string;
+  status?: string;
+  data?: { id?: string };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   if (request.method !== "POST") return new Response(null, { status: 405 });
 
-  const rawBody = await request.text();
-  const signature = request.headers.get("X-Postmates-Signature");
-
-  // El webhook no identifica la tienda por sí mismo. Lo resolvemos por el
-  // customer_id del payload (cada tienda tiene el suyo) y verificamos la firma
-  // con el client_secret de ESA tienda.
-  let event: UberWebhookEvent;
+  let event: UberStatusEvent;
   try {
-    event = JSON.parse(rawBody);
+    event = JSON.parse(await request.text());
   } catch {
     return new Response(null, { status: 400 });
   }
 
-  const customerId = event.customer_id;
-  if (!customerId) {
-    logError("uber-webhook", "payload sin customer_id — rechazado");
-    return new Response(null, { status: 401 });
-  }
+  logDebug("uber-webhook", "evento recibido", { kind: event.kind, delivery: event.delivery_id, status: event.status });
 
-  const store = await db.storeConfig.findFirst({ where: { uberCustomerId: customerId } });
-  if (!store?.uberClientSecret) {
-    logError("uber-webhook", "no hay tienda con ese customer_id", { customerId });
-    return new Response(null, { status: 401 });
-  }
+  // Otros tipos (ej. event.courier_update, cada pocos segundos) no cambian el estado.
+  if (event.kind !== "event.delivery_status") return new Response(null, { status: 200 });
 
-  const valid = await verifyUberSignature(decrypt(store.uberClientSecret), rawBody, signature);
-  if (!valid) {
-    logError("uber-webhook", "firma inválida — rechazado", { shop: store.shop });
-    return new Response(null, { status: 401 });
-  }
-
-  logDebug("uber-webhook", "evento recibido", { type: event.event_type, delivery: event.data?.id });
-
-  if (event.event_type !== "delivery.status.changed") {
-    return new Response(null, { status: 200 });
-  }
-
-  const { id: uberDeliveryId, status, tracking_url } = event.data;
-
-  if (!uberDeliveryId || !VALID_STATUSES.includes(status)) {
-    logDebug("uber-webhook", "status desconocido o ID faltante", { status });
-    return new Response(null, { status: 200 });
-  }
+  const uberDeliveryId = event.delivery_id ?? event.data?.id;
+  if (!uberDeliveryId || !event.customer_id) return new Response(null, { status: 200 });
 
   const delivery = await db.delivery.findFirst({ where: { uberDeliveryId } });
   if (!delivery) {
@@ -70,38 +43,25 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return new Response(null, { status: 200 });
   }
 
-  const prevStatus = delivery.status;
-
-  // Uber canceló por su cuenta (ej. sin courier). Si la cancelación fue de la
-  // tienda, el delivery ya está en "canceled" y no entra aquí.
-  if (status === "canceled") {
-    if (prevStatus !== "canceled" && prevStatus !== "failed") {
-      await handleUberCancellation(delivery, "uber-webhook/canceled");
-    }
+  // El delivery debe pertenecer a la tienda dueña de esa cuenta de Uber.
+  const store = await db.storeConfig.findUnique({ where: { shop: delivery.shop } });
+  if (!store || store.uberCustomerId !== event.customer_id) {
+    logError("uber-webhook", "customer_id no coincide con la tienda del envío — ignorado", {
+      uberDeliveryId, customerId: event.customer_id,
+    });
     return new Response(null, { status: 200 });
   }
 
-  await db.delivery.update({
-    where: { id: delivery.id },
-    data: {
-      status,
-      ...(tracking_url ? { uberTrackingUrl: tracking_url } : {}),
-    },
-  });
+  try {
+    await db.storeConfig.update({ where: { shop: store.shop }, data: { lastUberWebhookAt: new Date() } });
 
-  logDebug("uber-webhook", "delivery actualizado", { deliveryId: delivery.id, status });
-
-  // Reflejar el avance en la línea de tiempo del pedido en Shopify.
-  // Solo al entrar a un estado nuevo, para no duplicar eventos si Uber reenvía
-  // el webhook. Requiere que la orden ya esté fulfilled.
-  const fulfillmentStatus = FULFILLMENT_EVENT_BY_STATUS[status];
-  if (fulfillmentStatus && status !== prevStatus) {
-    try {
-      const { admin } = await unauthenticated.admin(delivery.shop);
-      await addFulfillmentEvent(admin, delivery.orderId, fulfillmentStatus, "uber-webhook/fulfillment-event");
-    } catch (err) {
-      logError("uber-webhook/fulfillment-event", err, { deliveryId: delivery.id, status });
-    }
+    const live = await getDelivery(uberCredsFromConfig(store), uberDeliveryId);
+    const status = await applyUberStatus(delivery, live, "uber-webhook");
+    logInfo("uber-webhook", "estado aplicado", { shop: store.shop, orderNumber: delivery.orderNumber, status });
+  } catch (err) {
+    // 500 → Uber reintenta el aviso.
+    logError("uber-webhook", err, { uberDeliveryId });
+    return new Response(null, { status: 500 });
   }
 
   return new Response(null, { status: 200 });

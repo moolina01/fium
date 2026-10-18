@@ -50,6 +50,9 @@ model StoreConfig {
   // Última vez que Shopify pidió tarifas a Fium en el checkout. Es la señal de que
   // el carrier no solo está registrado, sino realmente conectado al checkout (zona de envío).
   lastRateRequestAt DateTime?
+  // Último aviso (webhook) de Uber recibido para esta tienda. Señal de que el
+  // webhook quedó bien creado en el dashboard de Uber Direct.
+  lastUberWebhookAt DateTime?
   autoDispatch   Boolean  @default(false)
   // Credenciales de Uber Direct propias de cada tienda. Cada cliente conecta su
   // cuenta (con su tarjeta) y paga sus envíos directo a Uber. El client_secret se
