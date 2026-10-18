@@ -9,6 +9,7 @@ import { PACKAGE_SIZES, toPackageSize, sizeFromGrams, formatKg } from "../lib/pa
 import { normalizeChileanPhone } from "../lib/phone";
 import { fulfillOrderWithTracking } from "../lib/fulfillment.server";
 import { isUberTestShop } from "../lib/test-shops.server";
+import { Bike, Car, Check, ExternalLink } from "lucide-react";
 import { colors as F, FONT, DISPLAY_FONT } from "../lib/theme";
 
 type ShopifyOrder = {
@@ -309,84 +310,120 @@ export default function OrderDetail() {
 
         {/* Productos */}
         <div style={{ background: F.surface, borderRadius: "12px", border: `1px solid ${F.border}`, overflow: "hidden" }}>
-          <div style={{ padding: "14px 18px", borderBottom: `1px solid ${F.border}`, background: F.bg, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
-            <div>
-              <span style={{ fontSize: "12px", fontWeight: "700", color: F.muted, textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                📦 Preparar para envío
-              </span>
-              <div style={{ fontSize: "12px", color: F.muted, marginTop: "2px" }}>
-                Esto es lo que el cliente compró
-              </div>
-              <a
-                href={adminOrderUrl}
-                target="_blank"
-                rel="noreferrer"
-                style={{ display: "inline-block", marginTop: "6px", fontSize: "12px", color: F.brand, fontWeight: 600, textDecoration: "none" }}
-              >
-                Ver pedido completo en Shopify (fotos y detalle) ↗
-              </a>
-            </div>
-            {/* Etiqueta clara: esto es lo que pagó el cliente, NO el costo del envío */}
-            <div style={{ textAlign: "right", flexShrink: 0 }}>
-              <div style={{ fontSize: "11px", color: F.muted, whiteSpace: "nowrap" }}>Pagó el cliente</div>
-              <div style={{ fontSize: "15px", fontWeight: "700", color: F.ink }}>{formattedTotal}</div>
-            </div>
+          <div style={{ padding: "14px 18px", borderBottom: `1px solid ${F.border}`, background: F.bg, display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
+            <span style={{ fontSize: "12px", fontWeight: "700", color: F.muted, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+              Preparar para envío
+            </span>
+            <a
+              href={adminOrderUrl}
+              target="_blank"
+              rel="noreferrer"
+              style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "12px", color: F.brand, fontWeight: 600, textDecoration: "none" }}
+            >
+              Ver pedido en Shopify <ExternalLink size={12} strokeWidth={2.25} aria-hidden="true" />
+            </a>
           </div>
-          <div style={{ padding: "14px 18px", display: "flex", flexDirection: "column", gap: "10px" }}>
-            {order.lineItems.edges.map(({ node }) => (
-              <div key={node.title} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                  <div style={{
-                    width: "32px", height: "32px", background: F.brandTint,
-                    borderRadius: "6px", display: "flex", alignItems: "center",
-                    justifyContent: "center", fontSize: "14px", flexShrink: 0,
-                  }}>📦</div>
-                  <span style={{ fontSize: "14px", fontWeight: "500", color: F.text }}>{node.title}</span>
-                </div>
+
+          {/* Lista de empaque: cantidad primero, como una guía de picking */}
+          <div style={{ padding: "6px 18px" }}>
+            {order.lineItems.edges.map(({ node }, i) => (
+              <div
+                key={`${node.title}-${i}`}
+                style={{
+                  display: "flex", alignItems: "center", gap: "12px", padding: "10px 0",
+                  borderTop: i === 0 ? "none" : `1px solid ${F.border}`,
+                }}
+              >
                 <span style={{
-                  fontSize: "13px", fontWeight: "700", color: F.ink,
-                  background: F.bg, padding: "3px 10px", borderRadius: "99px",
-                  border: `1px solid ${F.border}`, flexShrink: 0,
+                  minWidth: "34px", height: "28px", padding: "0 8px", borderRadius: "6px",
+                  background: F.brandTint, color: F.brand, fontSize: "13px", fontWeight: 700,
+                  display: "inline-flex", alignItems: "center", justifyContent: "center",
+                  fontVariantNumeric: "tabular-nums", flexShrink: 0,
                 }}>
-                  ×{node.quantity}
+                  {node.quantity}×
                 </span>
+                <span style={{ fontSize: "14px", fontWeight: 500, color: F.text }}>{node.title}</span>
               </div>
             ))}
-            <div style={{
-              marginTop: "4px", paddingTop: "14px", borderTop: `1px solid ${F.border}`,
-            }}>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: F.text, marginBottom: "6px" }}>
-                Tamaño del paquete
-              </label>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "6px" }}>
-                {PACKAGE_SIZES.map((s) => {
-                  const selected = packageSize === s.value;
-                  return (
-                    <button
-                      key={s.value}
-                      type="button"
-                      onClick={() => setPackageSize(s.value)}
-                      title={s.hint}
-                      style={{
-                        padding: "8px 6px", textAlign: "center", cursor: "pointer",
-                        borderRadius: "8px", fontSize: "12px", fontWeight: "600",
-                        border: `1.5px solid ${selected ? F.brand : F.border}`,
-                        background: selected ? F.brandTint : F.surface,
-                        color: selected ? F.brand : F.muted,
-                        fontFamily: FONT,
-                      }}
-                    >
-                      {s.label}
-                    </button>
-                  );
-                })}
-              </div>
-              <div style={{ fontSize: "12px", color: F.muted, marginTop: "8px" }}>
-                {totalGrams > 0
-                  ? <>Peso del pedido: <strong style={{ color: F.ink }}>{formatKg(totalGrams)}</strong>. El tamaño se sugiere según el peso; cámbialo si el paquete es más voluminoso.</>
-                  : <>Los productos no tienen peso cargado en Shopify — elige el tamaño a mano.</>}
-                {" "}Los productos, el peso y el tamaño se envían a Uber Direct.
-              </div>
+          </div>
+
+          {/* Resumen: peso y lo que pagó el cliente (NO es el costo del envío) */}
+          <div style={{
+            display: "flex", justifyContent: "space-between", gap: "12px", flexWrap: "wrap",
+            padding: "12px 18px", borderTop: `1px solid ${F.border}`, background: F.bg, fontSize: "13px",
+          }}>
+            <span style={{ color: F.muted }}>
+              Peso total{" "}
+              <strong style={{ color: F.ink, fontWeight: 600 }}>{totalGrams > 0 ? formatKg(totalGrams) : "sin peso cargado"}</strong>
+            </span>
+            <span style={{ color: F.muted }}>
+              Pagó el cliente <strong style={{ color: F.ink, fontWeight: 600 }}>{formattedTotal}</strong>
+            </span>
+          </div>
+
+          {/* Tamaño del paquete */}
+          <div style={{ padding: "16px 18px", borderTop: `1px solid ${F.border}` }}>
+            <div id="package-size-label" style={{ fontSize: "13px", fontWeight: 600, color: F.ink, marginBottom: "10px" }}>
+              Tamaño del paquete
+            </div>
+            <div
+              role="radiogroup"
+              aria-labelledby="package-size-label"
+              style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "8px" }}
+            >
+              {PACKAGE_SIZES.map((s) => {
+                const selected = packageSize === s.value;
+                const suggested = suggestedSize === s.value;
+                const VehicleIcon = s.vehicle === "auto" ? Car : Bike;
+                return (
+                  <button
+                    key={s.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    onClick={() => setPackageSize(s.value)}
+                    title={s.hint}
+                    style={{
+                      position: "relative", textAlign: "left", cursor: "pointer",
+                      padding: "12px", borderRadius: "10px", fontFamily: FONT,
+                      border: `1.5px solid ${selected ? F.brand : F.border}`,
+                      background: selected ? F.brandTint : F.surface,
+                      display: "flex", flexDirection: "column", gap: "4px",
+                    }}
+                  >
+                    <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px" }}>
+                      <span style={{ fontSize: "14px", fontWeight: 600, color: selected ? F.brand : F.ink }}>{s.label}</span>
+                      {selected && (
+                        <span style={{
+                          width: "18px", height: "18px", borderRadius: "50%", background: F.brand,
+                          display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+                        }}>
+                          <Check size={12} color="#FFFFFF" strokeWidth={3} aria-hidden="true" />
+                        </span>
+                      )}
+                    </span>
+                    <span style={{ fontSize: "12px", color: F.muted }}>Hasta {s.maxKg} kg</span>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px", color: F.muted }}>
+                      <VehicleIcon size={14} strokeWidth={1.75} aria-hidden="true" />
+                      {s.vehicle === "auto" ? "Auto" : "Moto"}
+                    </span>
+                    {suggested && (
+                      <span style={{
+                        alignSelf: "flex-start", marginTop: "4px", fontSize: "11px", fontWeight: 600,
+                        color: F.success, background: F.successTint, borderRadius: "99px", padding: "2px 8px",
+                      }}>
+                        Sugerido por peso
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: "12px", color: F.muted, marginTop: "10px", lineHeight: 1.6 }}>
+              {totalGrams > 0
+                ? <>Sugerimos el tamaño según el peso total del pedido. Si el paquete es más voluminoso que pesado, elige uno más grande.</>
+                : <>Los productos no tienen peso cargado en Shopify, así que no podemos sugerir un tamaño. Elígelo a mano.</>}
+              {" "}Uber Direct usa el tamaño para asignar el vehículo.
             </div>
           </div>
         </div>

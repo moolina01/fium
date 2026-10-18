@@ -3,11 +3,17 @@
 
 export type PackageSize = "small" | "medium" | "large" | "xlarge";
 
-export const PACKAGE_SIZES: { value: PackageSize; label: string; hint: string }[] = [
-  { value: "small", label: "Pequeño", hint: "Hasta 2 kg — sobre, 1 producto chico" },
-  { value: "medium", label: "Mediano", hint: "Hasta 7 kg — cabe en mochila de moto" },
-  { value: "large", label: "Grande", hint: "Hasta 12 kg — varios productos, requiere auto" },
-  { value: "xlarge", label: "Extra grande", hint: "Hasta 20 kg — pedido pesado o voluminoso, requiere auto" },
+export const PACKAGE_SIZES: {
+  value: PackageSize;
+  label: string;
+  hint: string;
+  maxKg: number;            // Tope de peso del tamaño (coincide con SIZE_BY_MAX_GRAMS)
+  vehicle: "moto" | "auto"; // Vehículo que Uber suele asignar para ese tamaño
+}[] = [
+  { value: "small", label: "Pequeño", hint: "Hasta 2 kg — sobre, 1 producto chico", maxKg: 2, vehicle: "moto" },
+  { value: "medium", label: "Mediano", hint: "Hasta 7 kg — cabe en mochila de moto", maxKg: 7, vehicle: "moto" },
+  { value: "large", label: "Grande", hint: "Hasta 12 kg — varios productos, requiere auto", maxKg: 12, vehicle: "auto" },
+  { value: "xlarge", label: "Extra grande", hint: "Hasta 20 kg — pedido pesado o voluminoso, requiere auto", maxKg: 20, vehicle: "auto" },
 ];
 
 const VALID = new Set(PACKAGE_SIZES.map((s) => s.value));
