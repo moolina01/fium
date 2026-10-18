@@ -7,6 +7,7 @@ import { toPackageSize, sizeFromGrams } from "../lib/package-size";
 import { normalizeChileanPhone } from "../lib/phone";
 import { fulfillOrderWithTracking } from "../lib/fulfillment.server";
 import { isUberTestShop } from "../lib/test-shops.server";
+import { buildManifest, type ManifestLine } from "../lib/manifest";
 
 type OrderPayload = {
   id: number;
@@ -21,7 +22,7 @@ type OrderPayload = {
     phone: string | null;
   } | null;
   billing_address: { phone: string | null } | null;
-  line_items: Array<{ title: string; quantity: number; grams: number; requires_shipping: boolean }>;
+  line_items: Array<{ title: string; quantity: number; grams: number; price: string; requires_shipping: boolean }>;
   customer: { phone: string | null; email: string | null } | null;
 };
 
@@ -52,6 +53,22 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     where: { shop_orderId: { shop, orderId: shopifyOrderId } },
   });
   if (existing) return new Response("OK", { status: 200 });
+
+  // Productos con su peso por unidad: el despacho manual los lee de aquí para
+  // mandárselos a Uber (la API GraphQL ya no da el peso por producto).
+  const manifestLines: ManifestLine[] = (order.line_items ?? [])
+    .filter((i) => i.requires_shipping !== false)
+    .map((i) => ({ title: i.title, quantity: i.quantity, grams: i.grams ?? 0, unitPrice: Number(i.price) || 0 }));
+  try {
+    await db.orderManifest.upsert({
+      where: { shop_orderId: { shop, orderId: shopifyOrderId } },
+      create: { shop, orderId: shopifyOrderId, items: manifestLines },
+      update: { items: manifestLines },
+    });
+  } catch (err) {
+    // No bloquea: sin esto el despacho manual igual funciona, con el peso repartido.
+    logError("orders.paid/manifest", err, { shop, orderNumber: order.name });
+  }
 
   // Modo manual: la orden aparece en el dashboard vía Shopify API, sin crear delivery
   if (!config.autoDispatch) {
@@ -114,9 +131,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     // Tamaño según el peso total del pedido (Uber lo usa para elegir vehículo).
     // Sin peso cargado, se usa el tamaño por defecto de la tienda.
-    const shippableItems = order.line_items.filter((i) => i.requires_shipping !== false);
-    const totalGrams = shippableItems.reduce((sum, i) => sum + (i.grams ?? 0) * i.quantity, 0);
+    const totalGrams = manifestLines.reduce((sum, l) => sum + l.grams * l.quantity, 0);
     const packageSize = sizeFromGrams(totalGrams) ?? toPackageSize(config.packageSize);
+    const manifest = buildManifest(manifestLines, packageSize);
 
     const delivery = await createDelivery(creds, {
       quoteId: quote.id,
@@ -129,12 +146,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       dropoffAddress,
       dropoffPhone,
       dropoffNotes: order.note?.trim() || undefined,
-      manifestItems: shippableItems.map((i) => ({
-        name: i.title,
-        quantity: i.quantity,
-        size: packageSize,
-        ...(i.grams > 0 && { weight: i.grams }),
-      })),
+      manifestItems: manifest.items,
+      manifestTotalValue: manifest.totalValue,
+      externalId: order.name,
       // Robo-courier de Uber (sandbox) SOLO para la tienda de review de Shopify.
       testMode: isUberTestShop(shop),
     });

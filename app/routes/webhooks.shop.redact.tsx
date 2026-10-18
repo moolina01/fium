@@ -10,9 +10,10 @@ import db from "../db.server";
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { shop } = await authenticate.webhook(request);
 
-  const [deliveries, , configs, sessions] = await Promise.all([
+  const [deliveries, , , configs, sessions] = await Promise.all([
     db.delivery.deleteMany({ where: { shop } }),
     db.dismissedOrder.deleteMany({ where: { shop } }),
+    db.orderManifest.deleteMany({ where: { shop } }),
     db.storeConfig.deleteMany({ where: { shop } }),
     db.session.deleteMany({ where: { shop } }),
   ]);

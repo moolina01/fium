@@ -109,6 +109,20 @@ model DismissedOrder {
   @@unique([shop, orderId])
 }
 
+// Productos de cada pedido Fium tal como llegan en el webhook orders/paid, con el
+// peso por unidad. La API GraphQL 2026-01 ya no entrega el peso por producto sin
+// el scope read_products, así que el despacho manual lo lee de aquí para
+// mandárselo a Uber.
+model OrderManifest {
+  id        String   @id @default(cuid())
+  shop      String
+  orderId   String   // GID de la orden en Shopify
+  items     Json     // [{ title, quantity, grams, unitPrice }] — unitPrice en pesos
+  createdAt DateTime @default(now())
+
+  @@unique([shop, orderId])
+}
+
 // Token OAuth de Uber Direct, uno por cuenta de tienda (clave = clientId de esa
 // tienda). Se persiste para que sobreviva reinicios/serverless — Uber limita la
 // generación de tokens a 100/hora, así que nunca se genera por request.

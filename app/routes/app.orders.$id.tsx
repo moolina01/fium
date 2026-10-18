@@ -9,6 +9,7 @@ import { PACKAGE_SIZES, toPackageSize, sizeFromGrams, formatKg } from "../lib/pa
 import { normalizeChileanPhone } from "../lib/phone";
 import { fulfillOrderWithTracking } from "../lib/fulfillment.server";
 import { isUberTestShop } from "../lib/test-shops.server";
+import { buildManifest, parseManifestLines, type ManifestLine } from "../lib/manifest";
 import { Bike, Car, Check, ExternalLink } from "lucide-react";
 import { colors as F, FONT, DISPLAY_FONT } from "../lib/theme";
 
@@ -19,7 +20,10 @@ type ShopifyOrder = {
   shippingAddress: { name: string; address1: string; city: string; province: string | null; zip: string; phone: string | null } | null;
   billingAddress: { phone: string | null } | null;
   totalWeight: string | number | null;
-  lineItems: { edges: Array<{ node: { title: string; quantity: number; requiresShipping: boolean } }> };
+  lineItems: { edges: Array<{ node: {
+    title: string; quantity: number; requiresShipping: boolean;
+    originalUnitPriceSet: { shopMoney: { amount: string } };
+  } }> };
 };
 
 async function fetchOrder(
@@ -35,7 +39,7 @@ async function fetchOrder(
         shippingAddress { name address1 city province zip phone }
         billingAddress { phone }
         totalWeight
-        lineItems(first: 50) { edges { node { title quantity requiresShipping } } }
+        lineItems(first: 50) { edges { node { title quantity requiresShipping originalUnitPriceSet { shopMoney { amount } } } } }
       }
     }
   `, { variables: { id: `gid://shopify/Order/${orderId}` } });
@@ -50,6 +54,28 @@ async function fetchOrder(
  */
 function orderWeightGrams(order: ShopifyOrder): number {
   return Number(order.totalWeight ?? 0);
+}
+
+/**
+ * Productos del pedido con peso y precio por unidad, para el manifest de Uber.
+ * El peso por producto viene del webhook orders/paid (guardado en OrderManifest).
+ * Si no está (pedido anterior a ese registro), se reparte el peso total del
+ * pedido en partes iguales por unidad: el total que ve Uber sigue siendo el real.
+ */
+async function orderManifestLines(shop: string, order: ShopifyOrder): Promise<ManifestLine[]> {
+  const saved = await db.orderManifest.findUnique({ where: { shop_orderId: { shop, orderId: order.id } } });
+  const savedLines = parseManifestLines(saved?.items);
+  if (savedLines) return savedLines;
+
+  const nodes = order.lineItems.edges.map((e) => e.node).filter((n) => n.requiresShipping !== false);
+  const units = nodes.reduce((sum, n) => sum + n.quantity, 0);
+  const gramsPerUnit = units > 0 ? orderWeightGrams(order) / units : 0;
+  return nodes.map((n) => ({
+    title: n.title,
+    quantity: n.quantity,
+    grams: gramsPerUnit,
+    unitPrice: Number(n.originalUnitPriceSet.shopMoney.amount) || 0,
+  }));
 }
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
@@ -149,11 +175,10 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
   const pickupAddress = { streetAddress: [storeConfig.address], city: storeConfig.comuna, state: storeConfig.region, zipCode: storeConfig.zipCode };
   const dropoffAddress = { streetAddress: [order.shippingAddress.address1], city: order.shippingAddress.city, state: order.shippingAddress.province ?? order.shippingAddress.city, zipCode: order.shippingAddress.zip };
-  const manifestItems = order.lineItems.edges
-    .filter((e) => e.node.requiresShipping !== false)
-    // Sin peso por producto (ver orderWeightGrams): el peso es opcional para Uber,
-    // que usa el tamaño del paquete para elegir el vehículo.
-    .map((e) => ({ name: e.node.title, quantity: e.node.quantity, size: packageSize }));
+  const manifest = buildManifest(await orderManifestLines(session.shop, order), packageSize);
+  const manifestItems = manifest.items;
+  const manifestTotalValue = manifest.totalValue;
+  const externalId = order.name;
   // Robo-courier de Uber (sandbox) SOLO para la tienda de review de Shopify.
   const testMode = isUberTestShop(session.shop);
   // Uber exige E.164; tiendas antiguas pueden tener el teléfono guardado sin formato.
@@ -165,7 +190,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     delivery = await createDelivery(creds, {
       quoteId: activeQuoteId,
       pickupName: storeConfig.contactName, pickupAddress, pickupPhone, pickupNotes,
-      dropoffName: order.shippingAddress.name, dropoffAddress, dropoffPhone, dropoffNotes, manifestItems, testMode,
+      dropoffName: order.shippingAddress.name, dropoffAddress, dropoffPhone, dropoffNotes, manifestItems, manifestTotalValue, externalId, testMode,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "";
@@ -176,7 +201,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         delivery = await createDelivery(creds, {
           quoteId: freshQuote.id,
           pickupName: storeConfig.contactName, pickupAddress, pickupPhone, pickupNotes,
-          dropoffName: order.shippingAddress.name, dropoffAddress, dropoffPhone, dropoffNotes, manifestItems, testMode,
+          dropoffName: order.shippingAddress.name, dropoffAddress, dropoffPhone, dropoffNotes, manifestItems, manifestTotalValue, externalId, testMode,
         });
       } catch (e2) {
         return { error: e2 instanceof Error ? e2.message : "Error al crear el envío en Uber Direct." };
