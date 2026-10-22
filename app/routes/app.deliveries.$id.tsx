@@ -8,16 +8,13 @@ import { getDelivery, cancelDelivery, getStoreUberCreds } from "../services/uber
 import { logError } from "../lib/logger.server";
 import { applyUberStatus, describeVehicle } from "../lib/delivery-status.server";
 import { colors as F, FONT, DISPLAY_FONT } from "../lib/theme";
+import { formatTimeCL } from "../lib/dispatch-hours";
 
 function formatEta(iso: string | null | undefined) {
   if (!iso) return null;
   // Uber devuelve UTC y el server corre en UTC (Railway) — sin timeZone explícito,
   // toLocaleTimeString usa la del proceso, no la de Chile, y queda desfasado ~4h.
-  return new Date(iso).toLocaleTimeString("es-CL", {
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: "America/Santiago",
-  });
+  return formatTimeCL(new Date(iso));
 }
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {

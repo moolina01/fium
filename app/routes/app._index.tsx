@@ -12,7 +12,7 @@ import { applyUberStatus } from "../lib/delivery-status.server";
 import { Bike, Car, Check, ChevronRight, Motorbike, Phone } from "lucide-react";
 import { FONT } from "../lib/theme";
 import { CountUp } from "../components/CountUp";
-import { describePlacedAt, dispatchPromise, hoursFromConfig, isSameDayDispatch, minutesWaiting, relativeDayLabel } from "../lib/dispatch-hours";
+import { describePlacedAt, dispatchPromise, formatTimeCL, hoursFromConfig, isSameDayDispatch, minutesWaiting, relativeDayLabel } from "../lib/dispatch-hours";
 import { UberConnectCard } from "../components/setup/UberConnectCard";
 import { ShopifyActivationCard } from "../components/setup/ShopifyActivationCard";
 
@@ -229,7 +229,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       const placedAt = new Date(e.node.createdAt);
       const outOfHours = !isSameDayDispatch(placedAt, hours);
       const promise = dispatchPromise(placedAt, hours);
-      const startTime = promise.startsAt.toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit", timeZone: "America/Santiago" });
+      const startTime = formatTimeCL(promise.startsAt);
       return {
       id: e.node.id,
       name: e.node.name,

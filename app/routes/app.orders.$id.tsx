@@ -9,6 +9,7 @@ import { PACKAGE_SIZES, toPackageSize, sizeFromGrams, formatKg, effectiveSize, C
 import { normalizeChileanPhone } from "../lib/phone";
 import { fulfillOrderWithTracking } from "../lib/fulfillment.server";
 import { isUberTestShop } from "../lib/test-shops.server";
+import { formatTimeCL } from "../lib/dispatch-hours";
 import { TEST_SCENARIOS, UNDELIVERABLE_ACTIONS, isCancelScenario, toTestScenario, toUndeliverableAction, type TestScenario, type UndeliverableAction } from "../lib/test-scenarios";
 import { logError } from "../lib/logger.server";
 import { buildManifest, parseManifestLines, type ManifestLine } from "../lib/manifest";
@@ -632,7 +633,7 @@ export default function OrderDetail() {
                     </div>
                     {quote.expires && (
                       <div style={{ fontSize: "12px", color: F.muted, textAlign: "center" }}>
-                        Cotización válida hasta las {new Date(quote.expires).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit", timeZone: "America/Santiago" })} — confirma antes de que expire
+                        Cotización válida hasta las {formatTimeCL(new Date(quote.expires))} — confirma antes de que expire
                       </div>
                     )}
                   </div>

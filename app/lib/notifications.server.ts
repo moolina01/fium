@@ -10,7 +10,7 @@ import { sendEmail } from "./email.server";
 import { clp, renderEmail, type EmailContent, type EmailItem } from "./email-templates.server";
 import { parseManifestLines, type ManifestLine } from "./manifest";
 import { logError, logInfo } from "./logger.server";
-import { DELIVERY_WINDOW_HOURS, dispatchPromise, hoursFromConfig, isSameDayDispatch, isWithinDispatchHours, TZ } from "./dispatch-hours";
+import { DELIVERY_WINDOW_HOURS, dispatchPromise, formatTimeCL, hoursFromConfig, isSameDayDispatch, isWithinDispatchHours } from "./dispatch-hours";
 
 export const REMINDER_MINUTES = 20;
 // Pedidos más antiguos que esto no reciben recordatorio (ej. justo después de un
@@ -50,7 +50,7 @@ const numericId = (gid: string) => gid.split("/").pop() ?? gid;
 /** "22 oct, 10:15" en hora de Chile. */
 function dateTimeCL(d: Date): string {
   const day = d.toLocaleDateString("es-CL", { day: "numeric", month: "short", timeZone: "America/Santiago" }).replace(".", "");
-  const time = d.toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit", timeZone: "America/Santiago" });
+  const time = formatTimeCL(d);
   return `${day}, ${time}`;
 }
 
@@ -131,7 +131,7 @@ function promisedDelivery(m: NonNullable<Manifest>, config: Config): string {
     return "Pagado fuera de tu horario de despacho: despáchalo apenas puedas";
   }
   const deadline = new Date(m.createdAt.getTime() + DELIVERY_WINDOW_HOURS[1] * 3_600_000);
-  const time = deadline.toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit", timeZone: TZ });
+  const time = formatTimeCL(deadline);
   return `Antes de las ${time} (${DELIVERY_WINDOW_HOURS[0]} a ${DELIVERY_WINDOW_HOURS[1]} horas desde el pago)`;
 }
 

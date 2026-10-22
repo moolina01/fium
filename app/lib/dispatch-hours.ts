@@ -32,6 +32,7 @@ const DAY_LONG: Record<number, string> = Object.fromEntries(WEEKDAYS.map((d) => 
 export function parseDays(v: string | null | undefined): number[] {
   return (v ?? "")
     .split(",")
+    .filter((d) => d.trim() !== "")
     .map((d) => Number(d.trim()))
     .filter((d) => Number.isInteger(d) && d >= 0 && d <= 6);
 }
@@ -152,6 +153,11 @@ export function relativeDayLabel(target: Date, now = new Date()): string {
   if (diff <= 0) return "hoy";
   if (diff === 1) return "mañana";
   return `el ${DAY_LONG[t.weekday]}`;
+}
+
+/** "13:15" — hora de Chile en formato 24 h (sin hourCycle, es-CL da "01:15 p. m."). */
+export function formatTimeCL(d: Date): string {
+  return d.toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: TZ });
 }
 
 /** "Lun a Sáb, 09:00 a 19:00" */
