@@ -88,7 +88,7 @@ function calcTimeAgo(dateStr: string) {
   return `hace ${Math.floor(hrs / 24)}d`;
 }
 
-// Fium Express promete entrega en 2 a 3 horas desde el pago, y el viaje de Uber
+// Fium Express promete entrega en 1 a 3 horas desde el pago, y el viaje de Uber
 // toma cerca de una hora. Si un pedido lleva 15+ min sin despacharse ya le está
 // comiendo margen a esa promesa; sobre 30 min conviene despacharlo de inmediato.
 function pendingUrgency(minutesAgo: number): { color: string; textColor: string } | null {

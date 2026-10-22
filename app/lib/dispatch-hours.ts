@@ -12,7 +12,7 @@ export type DispatchHours = {
 };
 
 // Plazo que Fium le promete al cliente en el checkout, en horas desde el pago.
-export const DELIVERY_WINDOW_HOURS = [2, 3] as const;
+export const DELIVERY_WINDOW_HOURS = [1, 3] as const;
 
 export const DEFAULT_DISPATCH_HOURS: DispatchHours = { days: [1, 2, 3, 4, 5, 6], start: "09:00", cutoff: "19:00" };
 
