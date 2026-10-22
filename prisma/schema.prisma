@@ -63,6 +63,11 @@ model StoreConfig {
   uberClientId     String?
   uberClientSecret String?  // cifrado
   uberCustomerId   String?
+  // Horario de despacho (hora de Chile, ver app/lib/dispatch-hours.ts). Fuera de
+  // él, el checkout ofrece "llega mañana" en vez de "llega hoy".
+  dispatchDays   String   @default("1,2,3,4,5,6") // 0 = domingo … 6 = sábado
+  dispatchStart  String   @default("09:00")
+  dispatchCutoff String   @default("19:00")       // Último pedido que sale el mismo día
   // Avisos por correo a la tienda (app/lib/notifications.server.ts).
   notifyEmail      String?
   notifyCanceled   Boolean  @default(true)   // Uber canceló o devolvió un envío

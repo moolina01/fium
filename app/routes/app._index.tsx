@@ -12,6 +12,7 @@ import { applyUberStatus } from "../lib/delivery-status.server";
 import { Bike, Car, Check, ChevronRight, Motorbike, Phone } from "lucide-react";
 import { FONT } from "../lib/theme";
 import { CountUp } from "../components/CountUp";
+import { describePlacedAt, dispatchPromise, hoursFromConfig, isSameDayDispatch, minutesWaiting, relativeDayLabel } from "../lib/dispatch-hours";
 import { UberConnectCard } from "../components/setup/UberConnectCard";
 import { ShopifyActivationCard } from "../components/setup/ShopifyActivationCard";
 
@@ -19,7 +20,11 @@ type Order = {
   id: string;
   name: string;
   timeAgo: string;
-  minutesAgo: number;
+  minutesAgo: number;     // Minutos esperando desde que se pudo despachar (negativo si aún no abre el horario)
+  // Comprado fuera del horario de despacho (de noche, domingo…). startsLabel solo
+  // viene si todavía no abre el horario: "Sale mañana desde las 09:00".
+  outOfHours: boolean;
+  startsLabel: string | null;
   orderId: string;
   customerName: string;
   address: string;
@@ -118,7 +123,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             node {
               id name createdAt
               shippingAddress { name address1 city zip }
-              shippingLines(first: 1) { edges { node { title } } }
+              shippingLines(first: 1) { edges { node { title code } } }
             }
           }
           pageInfo { hasNextPage endCursor }
@@ -205,11 +210,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // Órdenes Shopify sin delivery creado aún (+ las que fallaron en auto-dispatch).
   // Más nuevas primero; las que llevan rato esperando se marcan con el punto de urgencia.
+  const hours = hoursFromConfig(config);
+  const now = new Date();
   const pendingOrders: Order[] = raw
     .filter((e: any) =>
       e.node.shippingLines.edges.some((s: any) => {
+        // Se reconoce por el service_code de carrier.rates; el título queda de respaldo.
         const title = s.node.title.toLowerCase();
-        return (title.includes("uber") || title.includes("fium")) &&
+        return (s.node.code === "uber_direct" || title.includes("uber") || title.includes("fium")) &&
           !deliveredOrderIds.has(e.node.id) && !dismissedOrderIds.has(e.node.id);
       })
     )
@@ -217,11 +225,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       (a: { node: { createdAt: string } }, b: { node: { createdAt: string } }) =>
         new Date(b.node.createdAt).getTime() - new Date(a.node.createdAt).getTime()
     )
-    .map((e: any) => ({
+    .map((e: any) => {
+      const placedAt = new Date(e.node.createdAt);
+      const outOfHours = !isSameDayDispatch(placedAt, hours);
+      const promise = dispatchPromise(placedAt, hours);
+      const startTime = promise.startsAt.toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit", timeZone: "America/Santiago" });
+      return {
       id: e.node.id,
       name: e.node.name,
-      timeAgo: calcTimeAgo(e.node.createdAt),
-      minutesAgo: calcMinutesAgo(e.node.createdAt),
+      timeAgo: outOfHours ? describePlacedAt(placedAt, now) : calcTimeAgo(e.node.createdAt),
+      minutesAgo: minutesWaiting(placedAt, hours, now),
+      outOfHours,
+      startsLabel: promise.startsAt > now ? `Sale ${relativeDayLabel(promise.startsAt, now)} desde las ${startTime}` : null,
       orderId: (e.node.id as string).split("/").pop() ?? "",
       customerName: e.node.shippingAddress?.name ?? "Sin nombre",
       address: e.node.shippingAddress?.address1 ?? "",
@@ -229,7 +244,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       autoDispatchFailed: failedOrderIds.has(e.node.id),
       failedAfterDispatch: failedAfterDispatchIds.has(e.node.id),
       failureReason: failureReasonByOrderId.get(e.node.id) ?? null,
-    }));
+      };
+    });
 
   // Solo los no gestionados que siguen abiertos en Shopify (últimos 30 días), para
   // poder volver a gestionarlos; los ya preparados o cerrados no hace falta mostrarlos.
@@ -948,7 +964,7 @@ function OrderTable({ orders, onDismiss }: { orders: Order[]; onDismiss: (order:
             display: "grid", gridTemplateColumns: ORDER_COLUMNS,
             alignItems: "center", padding: "13px 16px",
           }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
               {urgency && (
                 <span
                   title={order.minutesAgo >= 30 ? "Lleva más de 30 min sin despacharse" : "Lleva más de 15 min sin despacharse"}
@@ -957,6 +973,17 @@ function OrderTable({ orders, onDismiss }: { orders: Order[]; onDismiss: (order:
               )}
               <span style={{ fontSize: "14px", fontWeight: "600", color: "#111827" }}>{order.name}</span>
               <span style={{ fontSize: "12px", color: urgency?.textColor ?? "#9ca3af", fontWeight: urgency ? "700" : "400" }}>{order.timeAgo}</span>
+              {order.outOfHours && (
+                <span
+                  title={order.startsLabel ?? "Se compró fuera de tu horario de despacho. Al cliente se le prometió para el siguiente día de despacho."}
+                  style={{
+                    fontSize: "11px", fontWeight: 600, color: "#4B2BE0", background: "#EEEDFE",
+                    borderRadius: "99px", padding: "2px 8px", whiteSpace: "nowrap",
+                  }}
+                >
+                  {order.startsLabel ?? "Fuera de horario"}
+                </span>
+              )}
             </div>
             <div style={{ fontSize: "13px", color: "#374151" }}>{order.customerName}</div>
             <div style={{ fontSize: "13px", color: "#6b7280" }}>{order.address}, {order.city}</div>

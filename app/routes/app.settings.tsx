@@ -11,6 +11,7 @@ import { FONT } from "../lib/theme";
 import { normalizeChileanPhone } from "../lib/phone";
 import { isValidEmail } from "../lib/email.server";
 import { REMINDER_MINUTES, sendTestNotification } from "../lib/notifications.server";
+import { WEEKDAYS, describeHours, hoursFromConfig, isTime } from "../lib/dispatch-hours";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
@@ -43,6 +44,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     uberWebhookLiveAt: config?.lastUberWebhookAt?.toISOString() ?? null,
     suggestedEmail,
     reminderMinutes: REMINDER_MINUTES,
+    hours: config ? hoursFromConfig(config) : hoursFromConfig({ dispatchDays: "", dispatchStart: "", dispatchCutoff: "" }),
   };
 };
 
@@ -96,6 +98,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { success: autoDispatch ? "Modo automático activado." : "Modo manual activado.", intent };
   }
 
+  if (intent === "hours") {
+    const days = WEEKDAYS.map((d) => d.value).filter((d) => formData.get(`day${d}`) === "on");
+    const start = (formData.get("dispatchStart") as string) || "";
+    const cutoff = (formData.get("dispatchCutoff") as string) || "";
+    if (days.length === 0) return { error: "Elige al menos un día de despacho.", intent };
+    if (!isTime(start) || !isTime(cutoff)) return { error: "Revisa las horas: usa el formato 09:00.", intent };
+    if (start >= cutoff) return { error: "La hora límite tiene que ser después de la hora de inicio.", intent };
+    await db.storeConfig.update({
+      where: { shop: session.shop },
+      data: { dispatchDays: days.sort().join(","), dispatchStart: start, dispatchCutoff: cutoff },
+    });
+    return { success: `Horario guardado: ${describeHours({ days, start, cutoff })}.`, intent };
+  }
+
   if (intent === "notifications" || intent === "test_email") {
     const email = ((formData.get("notifyEmail") as string) || "").trim();
     if (email && !isValidEmail(email)) return { error: "Ese correo no parece válido. Revísalo, ej: ventas@tutienda.cl.", intent };
@@ -140,7 +156,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 const F = { fontFamily: FONT };
 
 export default function Settings() {
-  const { config, carrierRegistered, carrierLiveAt, uberConnected, uberWebhookUrl, uberWebhookLiveAt, suggestedEmail, reminderMinutes } = useLoaderData<typeof loader>();
+  const { config, carrierRegistered, carrierLiveAt, uberConnected, uberWebhookUrl, uberWebhookLiveAt, suggestedEmail, reminderMinutes, hours } = useLoaderData<typeof loader>();
   const [copied, setCopied] = useState(false);
   function copyWebhookUrl() {
     navigator.clipboard?.writeText(uberWebhookUrl).then(() => {
@@ -519,6 +535,46 @@ export default function Settings() {
           <div style={{ fontSize: "12px", color: "#9ca3af", marginTop: "10px", lineHeight: 1.5 }}>
             Uber solo asegura un auto cuando el paquete se marca como Extra grande, así que con “Siempre auto” Fium marca todos los pedidos así. El precio que ve tu cliente en el checkout no cambia.
           </div>
+        </Section>
+
+        <Section
+          title="Horario de despacho"
+          description="Cuándo despachas pedidos con Uber, en hora de Chile"
+        >
+          {actionData?.intent === "hours" && actionData.error && <Alert type="error">{actionData.error}</Alert>}
+          {actionData?.intent === "hours" && actionData.success && <Alert type="success">{actionData.success}</Alert>}
+          <Form method="post">
+            <input type="hidden" name="intent" value="hours" />
+            <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+              <fieldset style={{ border: "none", padding: 0, margin: 0 }}>
+                <legend style={{ fontSize: "12px", fontWeight: 600, color: "#374151", marginBottom: "8px", padding: 0 }}>Días de despacho</legend>
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                  {WEEKDAYS.map((d) => (
+                    <label key={d.value} htmlFor={`day${d.value}`} style={{
+                      display: "inline-flex", alignItems: "center", gap: "6px", cursor: "pointer",
+                      border: "1.5px solid #e5e7eb", borderRadius: "7px", padding: "6px 10px",
+                      fontSize: "13px", color: "#111827",
+                    }}>
+                      <input id={`day${d.value}`} name={`day${d.value}`} type="checkbox" defaultChecked={hours.days.includes(d.value)} style={{ accentColor: "#4B2BE0" }} />
+                      {d.short}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "12px" }}>
+                <Field label="Despachas desde las">
+                  <input id="dispatchStart" name="dispatchStart" type="time" defaultValue={hours.start} required style={inp} />
+                </Field>
+                <Field label="Último pedido del día a las">
+                  <input id="dispatchCutoff" name="dispatchCutoff" type="time" defaultValue={hours.cutoff} required style={inp} />
+                </Field>
+              </div>
+              <div style={{ fontSize: "12px", color: "#6b7280", lineHeight: 1.6 }}>
+                Los pedidos pagados en tu horario aparecen en el checkout como <strong>“llega hoy”</strong>. Si alguien compra después de la hora del último pedido o en un día sin despacho, Fium igual aparece, pero como <strong>“llega mañana”</strong> (o el próximo día de despacho), y en tu panel el pedido queda marcado como fuera de horario.
+              </div>
+              <div><Btn type="submit" disabled={saving}>Guardar horario</Btn></div>
+            </div>
+          </Form>
         </Section>
 
         <Section

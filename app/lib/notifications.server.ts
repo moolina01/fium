@@ -10,6 +10,7 @@ import { sendEmail } from "./email.server";
 import { clp, renderEmail, type EmailContent, type EmailItem } from "./email-templates.server";
 import { parseManifestLines, type ManifestLine } from "./manifest";
 import { logError, logInfo } from "./logger.server";
+import { dispatchPromise, hoursFromConfig, isSameDayDispatch, relativeDayLabel, TZ } from "./dispatch-hours";
 
 export const REMINDER_MINUTES = 20;
 // Pedidos más antiguos que esto no reciben recordatorio (ej. justo después de un
@@ -25,6 +26,9 @@ type Config = {
   notifyNewOrder: boolean;
   notifyReminder: boolean;
   autoDispatch: boolean;
+  dispatchDays: string;
+  dispatchStart: string;
+  dispatchCutoff: string;
 };
 
 // ─── Links ──────────────────────────────────────────────────────────────────
@@ -90,6 +94,7 @@ async function configFor(shop: string): Promise<Config | null> {
     select: {
       shop: true, contactName: true, notifyEmail: true, notifyCanceled: true,
       notifyNewOrder: true, notifyReminder: true, autoDispatch: true,
+      dispatchDays: true, dispatchStart: true, dispatchCutoff: true,
     },
   });
   if (!config || config.notifyEmail !== null) return config;
@@ -117,10 +122,21 @@ async function deliver(config: Config, content: EmailContent, subject: string, c
 }
 
 /** Filas del cliente para pedidos que aún no tienen envío (nuevo y recordatorio). */
-function pendingOrderDetails(m: NonNullable<Manifest>, lines: ManifestLine[] | null): Array<[string, string]> {
+/** "Hoy" o, si se compró fuera de horario, "Mañana desde las 09:00 (compra fuera de horario)". */
+function promisedDispatch(m: NonNullable<Manifest>, config: Config): string {
+  const hours = hoursFromConfig(config);
+  if (isSameDayDispatch(m.createdAt, hours)) return "Hoy";
+  const p = dispatchPromise(m.createdAt, hours);
+  const time = p.startsAt.toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit", timeZone: TZ });
+  const day = relativeDayLabel(p.startsAt);
+  return `${day.charAt(0).toUpperCase()}${day.slice(1)} desde las ${time} (compra fuera de horario)`;
+}
+
+function pendingOrderDetails(m: NonNullable<Manifest>, lines: ManifestLine[] | null, config: Config): Array<[string, string]> {
   return [
     ["Pedido", m.orderNumber ?? ""],
     ["Pagado", dateTimeCL(m.createdAt)],
+    ["Despacho prometido", promisedDispatch(m, config)],
     ["Cliente", m.customerName ?? "No informado"],
     ["Teléfono", m.customerPhone ?? "No informado"],
     ["Dirección", [m.customerAddress, m.customerComuna].filter(Boolean).join(", ") || "No informada"],
@@ -230,7 +246,7 @@ export async function notifyNewOrder(shop: string, orderId: string): Promise<voi
       label: "Nuevo pedido",
       title: `Pedido ${manifest.orderNumber} listo para despachar`,
       intro: "Tu cliente pagó un envío express con Uber Direct. Prepara el paquete y crea el envío en Fium para que un conductor lo retire en tu tienda.",
-      details: pendingOrderDetails(manifest, lines),
+      details: pendingOrderDetails(manifest, lines, config),
       items: emailItems(lines),
       totals: emailTotals(manifest, lines),
       primary: { label: "Preparar envío en Fium", url: appUrl(shop, `/app/orders/${numericId(orderId)}`) },
@@ -258,23 +274,34 @@ async function stillPending(shop: string, orderId: string): Promise<boolean> {
 export async function runReminderSweep(): Promise<void> {
   const context = "notify/reminder";
   const now = Date.now();
-  const due = await db.orderManifest.findMany({
+  // Candidatos de los últimos días: un pedido del sábado en la noche puede
+  // recordarse recién el lunes cuando abre el horario.
+  const candidates = await db.orderManifest.findMany({
     where: {
       reminderSentAt: null,
       orderNumber: { not: null },
-      createdAt: { lte: new Date(now - REMINDER_MINUTES * 60_000), gte: new Date(now - REMINDER_MAX_AGE_HOURS * 3_600_000) },
+      createdAt: { lte: new Date(now - REMINDER_MINUTES * 60_000), gte: new Date(now - 4 * 86_400_000) },
     },
     orderBy: { createdAt: "asc" },
-    take: 25,
+    take: 100,
   });
 
-  for (const m of due) {
+  const configs = new Map<string, Config | null>();
+  for (const m of candidates) {
     try {
+      if (!configs.has(m.shop)) configs.set(m.shop, await configFor(m.shop));
+      const config = configs.get(m.shop) ?? null;
+
+      // Se recuerda REMINDER_MINUTES después de que se pudo despachar: un pedido de
+      // anoche cuenta desde que abre el horario, no desde la compra.
+      const dueAt = dispatchPromise(m.createdAt, config ? hoursFromConfig(config) : { days: [0, 1, 2, 3, 4, 5, 6], start: "00:00", cutoff: "23:59" }).startsAt.getTime() + REMINDER_MINUTES * 60_000;
+      if (dueAt > now) continue;
+      const tooLate = now - dueAt > REMINDER_MAX_AGE_HOURS * 3_600_000;
+
       // Se reclama primero: si dos procesos corren a la vez, solo uno manda el correo.
       const claimed = await db.orderManifest.updateMany({ where: { id: m.id, reminderSentAt: null }, data: { reminderSentAt: new Date() } });
-      if (claimed.count === 0) continue;
+      if (claimed.count === 0 || tooLate) continue;
 
-      const config = await configFor(m.shop);
       if (!config?.notifyReminder || !config.notifyEmail || config.autoDispatch) continue;
       const [delivery, dismissed] = await Promise.all([
         db.delivery.findUnique({ where: { shop_orderId: { shop: m.shop, orderId: m.orderId } } }),
@@ -284,19 +311,26 @@ export async function runReminderSweep(): Promise<void> {
       if (!(await stillPending(m.shop, m.orderId))) continue;
 
       const lines = parseManifestLines(m.items);
-      const waited = Math.round((now - m.createdAt.getTime()) / 60_000);
+      const waited = Math.round((now - (dueAt - REMINDER_MINUTES * 60_000)) / 60_000);
+      const outOfHours = !isSameDayDispatch(m.createdAt, hoursFromConfig(config));
       await deliver(config, {
         storeName: config.contactName,
         label: "Recordatorio",
-        title: `El pedido ${m.orderNumber} lleva ${waited} minutos sin despachar`,
-        intro: "Tu cliente pagó un envío express y todavía no se ha creado el envío en Uber. Mientras más espere, más tarde recibe su pedido.",
-        details: pendingOrderDetails(m, lines),
+        title: outOfHours
+          ? `El pedido ${m.orderNumber} sigue sin despachar`
+          : `El pedido ${m.orderNumber} lleva ${waited} minutos sin despachar`,
+        intro: outOfHours
+          ? `Se compró fuera de tu horario de despacho y al cliente se le prometió para hoy. Ya abrió tu horario hace ${waited} minutos y todavía no se ha creado el envío en Uber.`
+          : "Tu cliente pagó un envío express y todavía no se ha creado el envío en Uber. Mientras más espere, más tarde recibe su pedido.",
+        details: pendingOrderDetails(m, lines, config),
         items: emailItems(lines),
         totals: emailTotals(m, lines),
         primary: { label: "Despachar en Fium", url: appUrl(m.shop, `/app/orders/${numericId(m.orderId)}`) },
         secondary: { label: "Ver pedido en Shopify", url: shopifyOrderUrl(m.shop, m.orderId) },
         footer: "Recibes este correo porque tienes activados los recordatorios de pedidos sin despachar.",
-      }, `Recordatorio: el pedido ${m.orderNumber} lleva ${waited} minutos sin despachar`, context, `reminder:${m.shop}:${m.orderId}`);
+      }, outOfHours
+        ? `Recordatorio: el pedido ${m.orderNumber} sigue sin despachar`
+        : `Recordatorio: el pedido ${m.orderNumber} lleva ${waited} minutos sin despachar`, context, `reminder:${m.shop}:${m.orderId}`);
     } catch (err) {
       logError(context, err, { shop: m.shop, orderId: m.orderId });
     }
