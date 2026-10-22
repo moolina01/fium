@@ -52,6 +52,4 @@ export async function sendEmail(email: Email, context: string): Promise<boolean>
 }
 
 /** Validación simple de formato; Resend rechaza el resto. */
-export function isValidEmail(v: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v);
-}
+export { isEmailFormat as isValidEmail } from "./email-format";

@@ -20,7 +20,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   ]);
   // Correo sugerido para los avisos: el de la tienda en Shopify, si aún no eligió otro.
   let suggestedEmail: string | null = null;
-  if (!config?.notifyEmail) {
+  if (config?.notifyEmail == null) {
     try {
       const res = await admin.graphql(`#graphql
         query ShopEmail { shop { email } }`);
@@ -109,7 +109,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     await db.storeConfig.update({
       where: { shop: session.shop },
       data: {
-        notifyEmail: email || null,
+        // "" (no null) = desactivado a propósito; null haría que se use el de Shopify.
+        notifyEmail: email.toLowerCase(),
         notifyCanceled: formData.get("notifyCanceled") === "on",
         notifyNewOrder: formData.get("notifyNewOrder") === "on",
         notifyReminder: formData.get("notifyReminder") === "on",
@@ -532,8 +533,11 @@ export default function Settings() {
                 <input
                   id="notifyEmail" name="notifyEmail" type="email" autoComplete="email"
                   defaultValue={config?.notifyEmail ?? suggestedEmail ?? ""}
-                  placeholder="ventas@tutienda.cl" style={inp}
+                  placeholder="despachos@tutienda.cl" style={inp}
                 />
+                <div style={{ fontSize: "12px", color: "#9ca3af", marginTop: "6px", lineHeight: 1.5 }}>
+                  Idealmente, el de quien gestiona los despachos. Si lo dejas vacío, no te enviaremos avisos.
+                </div>
               </Field>
               <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                 {([

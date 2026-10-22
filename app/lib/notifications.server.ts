@@ -79,14 +79,33 @@ async function manifestFor(shop: string, orderId: string) {
   return db.orderManifest.findUnique({ where: { shop_orderId: { shop, orderId } } });
 }
 
+/**
+ * Config de avisos de la tienda. notifyEmail: null = nunca se configuró (tiendas
+ * instaladas antes de los avisos): se usa el correo de la tienda en Shopify y se
+ * guarda. "" = la tienda lo borró a propósito en Configuración: no se le escribe.
+ */
 async function configFor(shop: string): Promise<Config | null> {
-  return db.storeConfig.findUnique({
+  const config = await db.storeConfig.findUnique({
     where: { shop },
     select: {
       shop: true, contactName: true, notifyEmail: true, notifyCanceled: true,
       notifyNewOrder: true, notifyReminder: true, autoDispatch: true,
     },
   });
+  if (!config || config.notifyEmail !== null) return config;
+  try {
+    const { admin } = await unauthenticated.admin(shop);
+    const res = await admin.graphql(`#graphql
+      query NotifyShopEmail { shop { email } }`);
+    const email: string | null = (await res.json()).data?.shop?.email?.trim().toLowerCase() || null;
+    if (!email) return config;
+    await db.storeConfig.updateMany({ where: { shop, notifyEmail: null }, data: { notifyEmail: email } });
+    logInfo("notify/default-email", "Se usó el correo de la tienda en Shopify para los avisos", { shop });
+    return { ...config, notifyEmail: email };
+  } catch (err) {
+    logError("notify/default-email", err, { shop });
+    return config;
+  }
 }
 
 async function deliver(config: Config, content: EmailContent, subject: string, context: string, idempotencyKey: string) {

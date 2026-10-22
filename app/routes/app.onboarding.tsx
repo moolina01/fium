@@ -8,6 +8,8 @@ import { REGIONES, REGIONES_COMUNAS } from "../data/chile";
 import { getSetupChecklist } from "../lib/setup.server";
 import { normalizeChileanPhone } from "../lib/phone";
 import { saveUberCredentials } from "../lib/uber-credentials.server";
+import { isValidEmail } from "../lib/email.server";
+import { isEmailFormat } from "../lib/email-format";
 import { colors as F, FONT, DISPLAY_FONT } from "../lib/theme";
 import { CountUp } from "../components/CountUp";
 import { UberConnectCard } from "../components/setup/UberConnectCard";
@@ -67,10 +69,21 @@ function fu(delay = 0, duration = 500): React.CSSProperties {
 
 // ─── Server ───────────────────────────────────────────────────────────────────
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session, redirect } = await authenticate.admin(request);
+  const { session, admin, redirect } = await authenticate.admin(request);
   const config = await db.storeConfig.findUnique({ where: { shop: session.shop } });
   // Sin dirección todavía: el flujo cliente maneja Welcome → HowItWorks → Dirección.
-  if (!config) return { initialStep: null, setup: null };
+  // El correo de la tienda en Shopify se sugiere para los avisos de despacho.
+  if (!config) {
+    let suggestedEmail = "";
+    try {
+      const res = await admin.graphql(`#graphql
+        query OnboardingShopEmail { shop { email } }`);
+      suggestedEmail = (await res.json()).data?.shop?.email ?? "";
+    } catch {
+      // Sin sugerencia: la tienda lo escribe.
+    }
+    return { initialStep: null, setup: null, suggestedEmail };
+  }
 
   // Con dirección guardada, el paso a mostrar se deriva del estado real en la DB
   // (nunca de estado de cliente) — así una vuelta días después cae en el paso
@@ -78,7 +91,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const setup = await getSetupChecklist(session.shop, session.accessToken!);
   if (setup.complete) throw redirect("/app");
   const initialStep: 3 | 4 = !setup.uberConnected ? 3 : 4;
-  return { initialStep, setup };
+  return { initialStep, setup, suggestedEmail: "" };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -124,9 +137,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     region: formData.get("region") as string,
     comuna: formData.get("comuna") as string,
     zipCode: formData.get("zipCode") as string,
+    // Correo para los avisos de despacho (envíos con problemas, recordatorios).
+    notifyEmail: ((formData.get("notifyEmail") as string) || "").trim().toLowerCase(),
   };
   const missing = Object.entries(data).filter(([k, v]) => k !== "shop" && k !== "pickupNotes" && !v);
   if (formData.get("phone") && !data.phone) return { error: "Teléfono inválido. Usa un celular chileno, ej: +56 9 1234 5678.", intent };
+  if (data.notifyEmail && !isValidEmail(data.notifyEmail)) return { error: "El correo para avisos no parece válido. Revísalo, ej: despachos@tutienda.cl.", intent };
   if (missing.length > 0) return { error: "Completa todos los campos para continuar.", intent };
   await db.storeConfig.create({ data });
   return { success: true, intent };
@@ -231,6 +247,7 @@ export default function Onboarding() {
           {step === 1 && <HowItWorksStep onNext={() => goTo(2)} />}
           {step === 2 && (
             <ConversationalForm
+              suggestedEmail={loaderData.suggestedEmail}
               saving={saving}
               error={actionData && "error" in actionData && actionData.intent === "address" ? actionData.error : undefined}
               onBack={() => goTo(1)}
@@ -423,6 +440,7 @@ function HowItWorksStep({ onNext }: { onNext: () => void }) {
 type FormValues = {
   contactName: string;
   phone: string;
+  notifyEmail: string;
   address: string;
   pickupNotes: string;
   region: string;
@@ -435,7 +453,7 @@ type Question = {
   question: string;
   hint: string;
   placeholder?: string;
-  type: "text" | "tel" | "region-select" | "comuna-select";
+  type: "text" | "tel" | "email" | "region-select" | "comuna-select";
   optional?: boolean;
 };
 
@@ -453,6 +471,13 @@ const QUESTIONS: Question[] = [
     hint: "El courier te contactará aquí si hay algún problema",
     placeholder: "+56 9 1234 5678",
     type: "tel" as const,
+  },
+  {
+    key: "notifyEmail" as keyof FormValues,
+    question: "¿A qué correo te avisamos?",
+    hint: "Te escribimos si Uber cancela un envío o si un pedido lleva rato sin despachar. Usa el correo de quien gestiona los despachos.",
+    placeholder: "despachos@tutienda.cl",
+    type: "email" as const,
   },
   {
     key: "address" as keyof FormValues,
@@ -491,10 +516,12 @@ const QUESTIONS: Question[] = [
 ];
 
 function ConversationalForm({
+  suggestedEmail,
   saving,
   error,
   onBack,
 }: {
+  suggestedEmail: string;
   saving: boolean;
   error?: string;
   onBack: () => void;
@@ -504,7 +531,7 @@ function ConversationalForm({
   const [dir, setDir] = useState<"fwd" | "back">("fwd");
   const [animKey, setAnimKey] = useState(0);
   const [values, setValues] = useState<FormValues>({
-    contactName: "", phone: "", address: "", pickupNotes: "", region: "", comuna: "", zipCode: "",
+    contactName: "", phone: "", notifyEmail: suggestedEmail, address: "", pickupNotes: "", region: "", comuna: "", zipCode: "",
   });
   const [currentInput, setCurrentInput] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -517,7 +544,7 @@ function ConversationalForm({
     if (!isReview) {
       const q = QUESTIONS[subStep];
       setCurrentInput(values[q.key] ?? "");
-      if (q.type === "text" || q.type === "tel") {
+      if (q.type === "text" || q.type === "tel" || q.type === "email") {
         setTimeout(() => inputRef.current?.focus(), 320);
       }
     }
@@ -527,7 +554,7 @@ function ConversationalForm({
   function advance(override?: string) {
     const val = override ?? currentInput;
     const q = QUESTIONS[subStep];
-    if (!q.optional && !val.trim()) return;
+    if (!isAnswerValid(q, val)) return;
     const updated = { ...values, [q.key]: val };
     if (q.key === "region") updated.comuna = "";
     setValues(updated);
@@ -546,7 +573,7 @@ function ConversationalForm({
 
   function handleKeyDown(e: React.KeyboardEvent) {
     const q = QUESTIONS[subStep];
-    if (e.key === "Enter" && (q.optional || currentInput.trim())) { e.preventDefault(); advance(); }
+    if (e.key === "Enter" && isAnswerValid(q, currentInput)) { e.preventDefault(); advance(); }
   }
 
   const slideStyle: React.CSSProperties = {
@@ -570,7 +597,7 @@ function ConversationalForm({
 
   const q = QUESTIONS[subStep];
   const isSelect = q.type === "region-select" || q.type === "comuna-select";
-  const canAdvance = q.optional || currentInput.trim().length > 0;
+  const canAdvance = isAnswerValid(q, currentInput);
 
   return (
     <div style={{ width: "100%" }}>
@@ -626,10 +653,11 @@ function ConversationalForm({
         </div>
 
         {/* Text / tel input */}
-        {(q.type === "text" || q.type === "tel") && (
+        {(q.type === "text" || q.type === "tel" || q.type === "email") && (
           <input
             ref={inputRef}
             type={q.type}
+            {...(q.type === "email" && { autoComplete: "email", inputMode: "email" as const })}
             value={currentInput}
             onChange={(e) => setCurrentInput(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -706,6 +734,13 @@ function ConversationalForm({
   );
 }
 
+/** Una respuesta permite avanzar si no está vacía (salvo opcionales) y, si es correo, si tiene formato válido. */
+function isAnswerValid(q: Question, val: string): boolean {
+  if (q.optional && !val.trim()) return true;
+  if (!val.trim()) return false;
+  return q.type === "email" ? isEmailFormat(val.trim()) : true;
+}
+
 // ─── Review screen ─────────────────────────────────────────────────────────────
 function ReviewScreen({
   values,
@@ -721,11 +756,12 @@ function ReviewScreen({
   const rows = [
     { label: "Nombre", value: values.contactName, step: 0 },
     { label: "Teléfono", value: values.phone, step: 1 },
-    { label: "Dirección", value: values.address, step: 2 },
-    { label: "Instrucciones", value: values.pickupNotes || "Sin instrucciones", step: 3 },
-    { label: "Región", value: values.region, step: 4 },
-    { label: "Comuna", value: values.comuna, step: 5 },
-    { label: "Cód. postal", value: values.zipCode, step: 6 },
+    { label: "Avisos a", value: values.notifyEmail, step: 2 },
+    { label: "Dirección", value: values.address, step: 3 },
+    { label: "Instrucciones", value: values.pickupNotes || "Sin instrucciones", step: 4 },
+    { label: "Región", value: values.region, step: 5 },
+    { label: "Comuna", value: values.comuna, step: 6 },
+    { label: "Cód. postal", value: values.zipCode, step: 7 },
   ];
 
   return (
@@ -763,7 +799,7 @@ function ReviewScreen({
             <span style={{ fontSize: "12px", color: F.muted, width: "90px", flexShrink: 0 }}>
               {row.label}
             </span>
-            <span style={{ fontSize: "14px", color: F.text, fontWeight: "500", flex: 1 }}>
+            <span style={{ fontSize: "14px", color: F.text, fontWeight: "500", flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>
               {row.value}
             </span>
             <button
@@ -783,6 +819,7 @@ function ReviewScreen({
       <Form method="post">
         <input type="hidden" name="contactName" value={values.contactName} />
         <input type="hidden" name="phone" value={values.phone} />
+        <input type="hidden" name="notifyEmail" value={values.notifyEmail} />
         <input type="hidden" name="address" value={values.address} />
         <input type="hidden" name="pickupNotes" value={values.pickupNotes} />
         <input type="hidden" name="region" value={values.region} />
