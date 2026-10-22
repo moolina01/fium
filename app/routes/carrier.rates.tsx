@@ -192,7 +192,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           // El panel y el webhook reconocen la tarifa por service_code ("Fium" en el
           // título queda como respaldo).
           service_name: `Fium Express — llega en ${DELIVERY_WINDOW_HOURS[0]} a ${DELIVERY_WINDOW_HOURS[1]} horas`,
-          description: "Despacho el mismo día con Uber Direct",
+          description: "Despacho el mismo día, directo a tu puerta",
           service_code: "uber_direct",
           // Shopify interpreta total_price en CENTAVOS (lo divide por 100 al mostrar).
           // Uber YA devuelve el fee en centavos (ej. 3828 CLP → fee = 382800), así
