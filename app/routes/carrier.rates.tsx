@@ -181,7 +181,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     if (!cached) setCached(cacheKey, quote);
 
-    // Promesa fija de 2 a 3 horas: además del viaje de Uber, la tienda prepara y
+    // Promesa fija (DELIVERY_WINDOW_HOURS): además del viaje de Uber, la tienda prepara y
     // despacha el pedido a mano, así que no se usa la duración de la cotización.
     const minEta = new Date(Date.now() + DELIVERY_WINDOW_HOURS[0] * 3_600_000).toISOString();
     const maxEta = new Date(Date.now() + DELIVERY_WINDOW_HOURS[1] * 3_600_000).toISOString();
