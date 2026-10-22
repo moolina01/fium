@@ -88,9 +88,9 @@ function calcTimeAgo(dateStr: string) {
   return `hace ${Math.floor(hrs / 24)}d`;
 }
 
-// Fium promete entrega bajo 60 min de punta a punta. Si un pedido lleva 15+ min
-// sin despacharse ya le está comiendo el margen a esa promesa, y sobre 30 min es
-// difícil que el envío completo (retiro + entrega) alcance a cumplirla.
+// Fium Express promete entrega en 2 a 3 horas desde el pago, y el viaje de Uber
+// toma cerca de una hora. Si un pedido lleva 15+ min sin despacharse ya le está
+// comiendo margen a esa promesa; sobre 30 min conviene despacharlo de inmediato.
 function pendingUrgency(minutesAgo: number): { color: string; textColor: string } | null {
   if (minutesAgo >= 30) return { color: "#DC2626", textColor: "#DC2626" };
   if (minutesAgo >= 15) return { color: "#EF9F27", textColor: "#B45309" };

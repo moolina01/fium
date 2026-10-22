@@ -4,7 +4,7 @@ import { getDeliveryQuote, uberCredsFromConfig, UberApiError, UberNotConfiguredE
 import type { QuoteResult } from "../services/uber-direct.server";
 import { logError, logInfo, logDebug } from "../lib/logger.server";
 import { MAX_ORDER_WEIGHT_GRAMS } from "../lib/package-size";
-import { dispatchPromise, hoursFromConfig } from "../lib/dispatch-hours";
+import { DELIVERY_WINDOW_HOURS, hoursFromConfig, isWithinDispatchHours } from "../lib/dispatch-hours";
 
 // Cache en memoria: clave = "shop|zip_destino|address1_destino", TTL = 5 min
 // Evita llamar a Uber cada vez que el cliente cambia algo menor en el checkout
@@ -115,6 +115,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const storeConfig = await db.storeConfig.findUnique({ where: { shop } });
   if (!storeConfig) return Response.json({ rates: [] });
 
+  // Fuera del horario de despacho de la tienda, Fium no aparece: la tienda no
+  // alcanza a despachar y el precio de Uber cambiaría al día siguiente.
+  if (!isWithinDispatchHours(new Date(), hoursFromConfig(storeConfig))) {
+    logDebug("carrier/rates", "fuera del horario de despacho — sin tarifa", { shop });
+    return Response.json({ rates: [] });
+  }
+
   // Credenciales de Uber de esta tienda. Si aún no conectó su cuenta, no cotizamos
   // (Fium no aparece en el checkout hasta que pegue sus credenciales en Settings).
   let creds;
@@ -174,27 +181,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     if (!cached) setCached(cacheKey, quote);
 
-    // Horario de despacho: dentro de él, "llega hoy"; fuera (de noche, domingo…),
-    // la tarifa se sigue ofreciendo pero como "llega mañana" (o el próximo día de
-    // despacho), y la tienda lo despacha a primera hora.
-    const promise = dispatchPromise(new Date(), hoursFromConfig(storeConfig));
-    const startsAt = promise.startsAt.getTime();
-    const minEta = new Date(startsAt + quote.duration * 60000).toISOString();
-    const maxEta = new Date(startsAt + (quote.duration + (promise.sameDay ? 30 : 180)) * 60000).toISOString();
-    const startTime = promise.startsAt.toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit", timeZone: "America/Santiago" });
-    const opensLater = startsAt > Date.now() + 5 * 60_000;
+    // Promesa fija de 2 a 3 horas: además del viaje de Uber, la tienda prepara y
+    // despacha el pedido a mano, así que no se usa la duración de la cotización.
+    const minEta = new Date(Date.now() + DELIVERY_WINDOW_HOURS[0] * 3_600_000).toISOString();
+    const maxEta = new Date(Date.now() + DELIVERY_WINDOW_HOURS[1] * 3_600_000).toISOString();
 
     return Response.json({
       rates: [
         {
-          // El nombre lleva "Uber": el panel y el webhook reconocen la tarifa por
-          // service_code, y por el título como respaldo.
-          service_name: `Envío Uber express — llega ${promise.dayLabel}`,
-          description: !opensLater
-            ? `Sale de la tienda apenas esté listo. Entrega en aprox. ${quote.duration} min.`
-            : promise.sameDay
-              ? `Se despacha hoy desde las ${startTime}. Entrega en aprox. ${quote.duration} min.`
-              : `Compra fuera del horario de despacho: sale ${promise.dayLabel} desde las ${startTime}.`,
+          // El panel y el webhook reconocen la tarifa por service_code ("Fium" en el
+          // título queda como respaldo).
+          service_name: `Fium Express — llega en ${DELIVERY_WINDOW_HOURS[0]} a ${DELIVERY_WINDOW_HOURS[1]} horas`,
+          description: "Despacho el mismo día con Uber Direct",
           service_code: "uber_direct",
           // Shopify interpreta total_price en CENTAVOS (lo divide por 100 al mostrar).
           // Uber YA devuelve el fee en centavos (ej. 3828 CLP → fee = 382800), así
@@ -202,8 +200,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           // que muestra fee/100). NO multiplicar por 100.
           total_price: String(Math.round(quote.fee)),
           currency: "CLP",
-          min_delivery_date: promise.sameDay && !opensLater && quote.dropoffEta ? quote.dropoffEta : minEta,
-          max_delivery_date: promise.sameDay && !opensLater && quote.dropoffEta ? quote.dropoffEta : maxEta,
+          min_delivery_date: minEta,
+          max_delivery_date: maxEta,
         },
       ],
     });

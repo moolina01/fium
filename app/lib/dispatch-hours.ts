@@ -11,6 +11,9 @@ export type DispatchHours = {
   cutoff: string;   // "19:00" — último pedido que sale el mismo día
 };
 
+// Plazo que Fium le promete al cliente en el checkout, en horas desde el pago.
+export const DELIVERY_WINDOW_HOURS = [2, 3] as const;
+
 export const DEFAULT_DISPATCH_HOURS: DispatchHours = { days: [1, 2, 3, 4, 5, 6], start: "09:00", cutoff: "19:00" };
 
 export const WEEKDAYS = [
@@ -74,6 +77,15 @@ function chileInstant(year: number, month: number, day: number, minutes: number)
     t += guess - asUtc;
   }
   return new Date(t);
+}
+
+/**
+ * ¿La tienda está en horario de despacho? Fuera de él Fium no se ofrece en el
+ * checkout: la tienda no puede despachar y el precio de Uber cambiaría al otro día.
+ */
+export function isWithinDispatchHours(at: Date, h: DispatchHours): boolean {
+  const p = chileParts(at);
+  return h.days.includes(p.weekday) && p.minutes >= toMinutes(h.start) && p.minutes < toMinutes(h.cutoff);
 }
 
 /** ¿Un pedido pagado en `at` sale el mismo día? */

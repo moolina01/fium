@@ -570,7 +570,7 @@ export default function Settings() {
                 </Field>
               </div>
               <div style={{ fontSize: "12px", color: "#6b7280", lineHeight: 1.6 }}>
-                Los pedidos pagados en tu horario aparecen en el checkout como <strong>“llega hoy”</strong>. Si alguien compra después de la hora del último pedido o en un día sin despacho, Fium igual aparece, pero como <strong>“llega mañana”</strong> (o el próximo día de despacho), y en tu panel el pedido queda marcado como fuera de horario.
+                Fium aparece en el checkout solo dentro de este horario, como <strong>“Fium Express — llega en 2 a 3 horas”</strong>. Fuera de él (de noche, o en días sin despacho) no se ofrece, para no prometer un envío que no alcanzas a despachar. Pon como hora del último pedido la última hora en que todavía puedes preparar y despachar.
               </div>
               <div><Btn type="submit" disabled={saving}>Guardar horario</Btn></div>
             </div>

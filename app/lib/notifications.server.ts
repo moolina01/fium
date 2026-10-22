@@ -10,7 +10,7 @@ import { sendEmail } from "./email.server";
 import { clp, renderEmail, type EmailContent, type EmailItem } from "./email-templates.server";
 import { parseManifestLines, type ManifestLine } from "./manifest";
 import { logError, logInfo } from "./logger.server";
-import { dispatchPromise, hoursFromConfig, isSameDayDispatch, relativeDayLabel, TZ } from "./dispatch-hours";
+import { DELIVERY_WINDOW_HOURS, dispatchPromise, hoursFromConfig, isSameDayDispatch, isWithinDispatchHours, TZ } from "./dispatch-hours";
 
 export const REMINDER_MINUTES = 20;
 // Pedidos más antiguos que esto no reciben recordatorio (ej. justo después de un
@@ -122,21 +122,24 @@ async function deliver(config: Config, content: EmailContent, subject: string, c
 }
 
 /** Filas del cliente para pedidos que aún no tienen envío (nuevo y recordatorio). */
-/** "Hoy" o, si se compró fuera de horario, "Mañana desde las 09:00 (compra fuera de horario)". */
-function promisedDispatch(m: NonNullable<Manifest>, config: Config): string {
-  const hours = hoursFromConfig(config);
-  if (isSameDayDispatch(m.createdAt, hours)) return "Hoy";
-  const p = dispatchPromise(m.createdAt, hours);
-  const time = p.startsAt.toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit", timeZone: TZ });
-  const day = relativeDayLabel(p.startsAt);
-  return `${day.charAt(0).toUpperCase()}${day.slice(1)} desde las ${time} (compra fuera de horario)`;
+/**
+ * Lo que se le prometió al cliente: entrega antes de pago + DELIVERY_WINDOW_HOURS[1].
+ * Si pagó fuera de horario (empezó el checkout justo antes del cierre), se avisa.
+ */
+function promisedDelivery(m: NonNullable<Manifest>, config: Config): string {
+  if (!isWithinDispatchHours(m.createdAt, hoursFromConfig(config))) {
+    return "Pagado fuera de tu horario de despacho: despáchalo apenas puedas";
+  }
+  const deadline = new Date(m.createdAt.getTime() + DELIVERY_WINDOW_HOURS[1] * 3_600_000);
+  const time = deadline.toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit", timeZone: TZ });
+  return `Antes de las ${time} (${DELIVERY_WINDOW_HOURS[0]} a ${DELIVERY_WINDOW_HOURS[1]} horas desde el pago)`;
 }
 
 function pendingOrderDetails(m: NonNullable<Manifest>, lines: ManifestLine[] | null, config: Config): Array<[string, string]> {
   return [
     ["Pedido", m.orderNumber ?? ""],
     ["Pagado", dateTimeCL(m.createdAt)],
-    ["Despacho prometido", promisedDispatch(m, config)],
+    ["Entrega prometida", promisedDelivery(m, config)],
     ["Cliente", m.customerName ?? "No informado"],
     ["Teléfono", m.customerPhone ?? "No informado"],
     ["Dirección", [m.customerAddress, m.customerComuna].filter(Boolean).join(", ") || "No informada"],
@@ -245,7 +248,7 @@ export async function notifyNewOrder(shop: string, orderId: string): Promise<voi
       storeName: config.contactName,
       label: "Nuevo pedido",
       title: `Pedido ${manifest.orderNumber} listo para despachar`,
-      intro: "Tu cliente pagó un envío express con Uber Direct. Prepara el paquete y crea el envío en Fium para que un conductor lo retire en tu tienda.",
+      intro: `Tu cliente pagó Fium Express, que promete la entrega en ${DELIVERY_WINDOW_HOURS[0]} a ${DELIVERY_WINDOW_HOURS[1]} horas. Prepara el paquete y crea el envío en Fium para que un conductor de Uber lo retire en tu tienda.`,
       details: pendingOrderDetails(manifest, lines, config),
       items: emailItems(lines),
       totals: emailTotals(manifest, lines),
@@ -320,8 +323,8 @@ export async function runReminderSweep(): Promise<void> {
           ? `El pedido ${m.orderNumber} sigue sin despachar`
           : `El pedido ${m.orderNumber} lleva ${waited} minutos sin despachar`,
         intro: outOfHours
-          ? `Se compró fuera de tu horario de despacho y al cliente se le prometió para hoy. Ya abrió tu horario hace ${waited} minutos y todavía no se ha creado el envío en Uber.`
-          : "Tu cliente pagó un envío express y todavía no se ha creado el envío en Uber. Mientras más espere, más tarde recibe su pedido.",
+          ? `Se pagó fuera de tu horario de despacho. Ya abrió tu horario hace ${waited} minutos y todavía no se ha creado el envío en Uber.`
+          : `Tu cliente pagó Fium Express, que promete la entrega en ${DELIVERY_WINDOW_HOURS[0]} a ${DELIVERY_WINDOW_HOURS[1]} horas, y todavía no se ha creado el envío en Uber.`,
         details: pendingOrderDetails(m, lines, config),
         items: emailItems(lines),
         totals: emailTotals(m, lines),
