@@ -7,7 +7,7 @@
 import db from "../db.server";
 import { unauthenticated } from "../shopify.server";
 import { sendEmail } from "./email.server";
-import { renderEmail, type EmailContent } from "./email-templates.server";
+import { clp, renderEmail, type EmailContent, type EmailItem } from "./email-templates.server";
 import { parseManifestLines, type ManifestLine } from "./manifest";
 import { logError, logInfo } from "./logger.server";
 
@@ -27,26 +27,52 @@ type Config = {
   autoDispatch: boolean;
 };
 
-// ─── Links al admin ─────────────────────────────────────────────────────────
+// ─── Links ──────────────────────────────────────────────────────────────────
 
 /** Link a una pantalla de Fium dentro del admin de Shopify (abre la app embebida). */
 function appUrl(shop: string, path: string): string {
   return `https://${shop}/admin/apps/${process.env.SHOPIFY_API_KEY}${path}`;
 }
 
+/** Link al pedido en el admin de Shopify. */
+function shopifyOrderUrl(shop: string, orderId: string): string {
+  return `https://${shop}/admin/orders/${numericId(orderId)}`;
+}
+
 const numericId = (gid: string) => gid.split("/").pop() ?? gid;
 
 // ─── Formato ────────────────────────────────────────────────────────────────
 
-function timeCL(d: Date): string {
-  return d.toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit", timeZone: "America/Santiago" });
+/** "22 oct, 10:15" en hora de Chile. */
+function dateTimeCL(d: Date): string {
+  const day = d.toLocaleDateString("es-CL", { day: "numeric", month: "short", timeZone: "America/Santiago" }).replace(".", "");
+  const time = d.toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit", timeZone: "America/Santiago" });
+  return `${day}, ${time}`;
 }
 
-function itemsText(lines: ManifestLine[] | null): string | null {
-  if (!lines?.length) return null;
-  const shown = lines.slice(0, 6).map((l) => `${l.quantity}× ${l.title}`);
-  if (lines.length > 6) shown.push(`y ${lines.length - 6} productos más`);
-  return shown.join("\n");
+const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+type Manifest = Awaited<ReturnType<typeof manifestFor>>;
+
+/** Productos con el total por línea, para la tabla del correo. */
+function emailItems(lines: ManifestLine[] | null): EmailItem[] {
+  return (lines ?? []).map((l) => ({
+    quantity: l.quantity,
+    title: l.title,
+    amount: l.unitPrice > 0 ? l.unitPrice * l.quantity : null,
+  }));
+}
+
+/** Total pagado por el cliente (incluye el envío) o, si no está, la suma de productos. */
+function emailTotals(m: Manifest, lines: ManifestLine[] | null): Array<[string, string]> {
+  if (m?.orderTotal) return [["Total pagado por el cliente", clp(m.orderTotal)]];
+  const sum = (lines ?? []).reduce((acc, l) => acc + l.unitPrice * l.quantity, 0);
+  return sum > 0 ? [["Total productos", clp(sum)]] : [];
+}
+
+function weightRow(lines: ManifestLine[] | null): Array<[string, string]> {
+  const kg = (lines ?? []).reduce((sum, l) => sum + l.grams * l.quantity, 0) / 1000;
+  return kg > 0 ? [["Peso total", `${kg.toLocaleString("es-CL", { maximumFractionDigits: 1 })} kg`]] : [];
 }
 
 async function manifestFor(shop: string, orderId: string) {
@@ -71,34 +97,56 @@ async function deliver(config: Config, content: EmailContent, subject: string, c
   return ok;
 }
 
+/** Filas del cliente para pedidos que aún no tienen envío (nuevo y recordatorio). */
+function pendingOrderDetails(m: NonNullable<Manifest>, lines: ManifestLine[] | null): Array<[string, string]> {
+  return [
+    ["Pedido", m.orderNumber ?? ""],
+    ["Pagado", dateTimeCL(m.createdAt)],
+    ["Cliente", m.customerName ?? "No informado"],
+    ["Teléfono", m.customerPhone ?? "No informado"],
+    ["Dirección", [m.customerAddress, m.customerComuna].filter(Boolean).join(", ") || "No informada"],
+    ...(m.orderNote ? [["Nota del cliente", m.orderNote] as [string, string]] : []),
+    ...weightRow(lines),
+  ];
+}
+
 // ─── 1. Envío con problema ──────────────────────────────────────────────────
 
 export type ProblemKind = "canceled" | "returned" | "auto_failed";
 
-const PROBLEM_COPY: Record<ProblemKind, { subject: (n: string) => string; title: (n: string) => string; intro: string; cta: string }> = {
+const PROBLEM_COPY: Record<ProblemKind, {
+  subject: (n: string) => string; title: (n: string) => string; intro: string;
+  notice: string; event: string; cta: string;
+}> = {
   canceled: {
-    subject: (n) => `⚠️ Uber canceló el envío del pedido ${n}`,
+    subject: (n) => `Acción requerida: Uber canceló el envío del pedido ${n}`,
     title: (n) => `Uber canceló el envío del pedido ${n}`,
-    intro: "El pedido volvió a \"Por despachar\" en Fium. Revisa el motivo y vuelve a despacharlo, o coordina con el cliente.",
+    intro: "El pedido volvió a Por despachar en Fium y el cliente todavía no lo recibe. Revisa el motivo y vuelve a despacharlo, o contacta al cliente para coordinar la entrega.",
+    notice: "Motivo informado por Uber",
+    event: "Cancelado",
     cta: "Volver a despachar",
   },
   returned: {
-    subject: (n) => `⚠️ El pedido ${n} vuelve a tu tienda`,
-    title: (n) => `El conductor no pudo entregar el pedido ${n}`,
-    intro: "El conductor está devolviendo el pedido a tu tienda. Cuando llegue, coordina con el cliente una nueva entrega.",
-    cta: "Ver el envío",
+    subject: (n) => `Acción requerida: el pedido ${n} vuelve a tu tienda`,
+    title: (n) => `El pedido ${n} no se pudo entregar`,
+    intro: "El conductor está devolviendo el pedido a tu tienda. Cuando lo recibas, contacta al cliente para coordinar una nueva entrega.",
+    notice: "Motivo informado por Uber",
+    event: "Devuelto",
+    cta: "Ver el envío en Fium",
   },
   auto_failed: {
-    subject: (n) => `⚠️ No se pudo crear el envío del pedido ${n}`,
+    subject: (n) => `Acción requerida: no se pudo crear el envío del pedido ${n}`,
     title: (n) => `No se pudo crear el envío del pedido ${n}`,
-    intro: "Fium intentó crear el envío automáticamente y Uber lo rechazó. El pedido quedó en \"Por despachar\" para que lo despaches a mano.",
-    cta: "Despachar a mano",
+    intro: "Fium intentó crear el envío automáticamente y Uber lo rechazó. El pedido quedó en Por despachar para que lo despaches a mano.",
+    notice: "Respuesta de Uber",
+    event: "Intento de envío",
+    cta: "Despachar en Fium",
   },
 };
 
 /**
- * Avisa que un envío tuvo un problema. `reason` es el texto en español que ya
- * se guarda en failureReason (ver delivery-status.server.ts).
+ * Avisa que un envío tuvo un problema. `reason` es el motivo en español, corto
+ * ("el cliente no estaba disponible…") o el mensaje de error de Uber.
  */
 export async function notifyDeliveryProblem(deliveryId: string, kind: ProblemKind, reason: string | null): Promise<void> {
   const context = `notify/${kind}`;
@@ -110,27 +158,37 @@ export async function notifyDeliveryProblem(deliveryId: string, kind: ProblemKin
 
     const copy = PROBLEM_COPY[kind];
     const manifest = await manifestFor(delivery.shop, delivery.orderId);
-    const items = itemsText(parseManifestLines(manifest?.items));
-    const facts: Array<[string, string]> = [
+    const lines = parseManifestLines(manifest?.items);
+    const courier = [delivery.courierName, delivery.courierVehicle].filter(Boolean).join(", ");
+    const details: Array<[string, string]> = [
+      ["Pedido", delivery.orderNumber],
       ["Cliente", delivery.customerName],
+      ["Teléfono", manifest?.customerPhone ?? "No informado"],
       ["Dirección", `${delivery.customerAddress}, ${delivery.customerComuna}`],
-      ...(items ? [["Productos", items] as [string, string]] : []),
-      ["Hora", `Hoy a las ${timeCL(new Date())}`],
+      ...(manifest?.orderNote ? [["Nota del cliente", manifest.orderNote] as [string, string]] : []),
+      ...(courier ? [["Conductor", courier] as [string, string]] : []),
+      ...(delivery.quoteAmount ? [["Costo del envío", clp(delivery.quoteAmount)] as [string, string]] : []),
+      ...(kind !== "auto_failed" ? [["Envío creado", dateTimeCL(delivery.createdAt)] as [string, string]] : []),
+      [copy.event, dateTimeCL(new Date())],
+      ...(delivery.uberDeliveryId ? [["ID de envío en Uber", delivery.uberDeliveryId] as [string, string]] : []),
     ];
-    const url = kind === "returned"
+    const primaryUrl = kind === "returned"
       ? appUrl(delivery.shop, `/app/deliveries/${delivery.id}`)
       : appUrl(delivery.shop, `/app/orders/${numericId(delivery.orderId)}`);
 
     await deliver(config, {
       storeName: config.contactName,
-      tone: "danger",
-      banner: "Requiere tu atención",
+      label: "Acción requerida",
+      urgent: true,
       title: copy.title(delivery.orderNumber),
-      callout: reason ?? undefined,
       intro: copy.intro,
-      facts,
-      cta: { label: copy.cta, url },
-      footer: "Recibes este correo porque tienes activados los avisos de envíos con problemas en Fium.",
+      notice: reason ? { heading: copy.notice, body: capitalize(reason.replace(/\.$/, "")) + "." } : undefined,
+      details,
+      items: emailItems(lines),
+      totals: emailTotals(manifest, lines),
+      primary: { label: copy.cta, url: primaryUrl },
+      secondary: { label: "Ver pedido en Shopify", url: shopifyOrderUrl(delivery.shop, delivery.orderId) },
+      footer: "Recibes este correo porque tienes activados los avisos de envíos con problemas.",
     }, copy.subject(delivery.orderNumber), context, `${kind}:${delivery.id}:${delivery.uberDeliveryId ?? ""}`);
   } catch (err) {
     logError(context, err, { deliveryId });
@@ -146,27 +204,20 @@ export async function notifyNewOrder(shop: string, orderId: string): Promise<voi
     if (!config?.notifyNewOrder || !config.notifyEmail || config.autoDispatch) return;
     const manifest = await manifestFor(shop, orderId);
     if (!manifest?.orderNumber) return;
-
     const lines = parseManifestLines(manifest.items);
-    const items = itemsText(lines);
-    const kg = (lines ?? []).reduce((sum, l) => sum + l.grams * l.quantity, 0) / 1000;
-    const facts: Array<[string, string]> = [
-      ["Cliente", manifest.customerName ?? "—"],
-      ["Comuna", manifest.customerComuna ?? "—"],
-      ...(items ? [["Productos", items] as [string, string]] : []),
-      ...(kg > 0 ? [["Peso", `${kg.toLocaleString("es-CL", { maximumFractionDigits: 1 })} kg`] as [string, string]] : []),
-    ];
 
     await deliver(config, {
       storeName: config.contactName,
-      tone: "brand",
-      banner: "Nuevo pedido por despachar",
-      title: `El pedido ${manifest.orderNumber} está esperando su envío`,
-      intro: "Tu cliente pagó un envío express con Uber Direct. Prepara el paquete y crea el envío para que un conductor lo pase a buscar.",
-      facts,
-      cta: { label: "Preparar y enviar", url: appUrl(shop, `/app/orders/${numericId(orderId)}`) },
-      footer: "Recibes este correo porque tienes activados los avisos de pedidos nuevos en Fium.",
-    }, `Pedido ${manifest.orderNumber} listo para enviar con Uber`, context, `new:${shop}:${orderId}`);
+      label: "Nuevo pedido",
+      title: `Pedido ${manifest.orderNumber} listo para despachar`,
+      intro: "Tu cliente pagó un envío express con Uber Direct. Prepara el paquete y crea el envío en Fium para que un conductor lo retire en tu tienda.",
+      details: pendingOrderDetails(manifest, lines),
+      items: emailItems(lines),
+      totals: emailTotals(manifest, lines),
+      primary: { label: "Preparar envío en Fium", url: appUrl(shop, `/app/orders/${numericId(orderId)}`) },
+      secondary: { label: "Ver pedido en Shopify", url: shopifyOrderUrl(shop, orderId) },
+      footer: "Recibes este correo porque tienes activados los avisos de pedidos nuevos.",
+    }, `Nuevo pedido ${manifest.orderNumber} para despachar con Uber`, context, `new:${shop}:${orderId}`);
   } catch (err) {
     logError(context, err, { shop, orderId });
   }
@@ -213,21 +264,20 @@ export async function runReminderSweep(): Promise<void> {
       if (delivery || dismissed) continue;
       if (!(await stillPending(m.shop, m.orderId))) continue;
 
-      const items = itemsText(parseManifestLines(m.items));
+      const lines = parseManifestLines(m.items);
       const waited = Math.round((now - m.createdAt.getTime()) / 60_000);
       await deliver(config, {
         storeName: config.contactName,
-        tone: "warning",
-        banner: "Recordatorio",
-        title: `El pedido ${m.orderNumber} lleva ${waited} minutos esperando`,
-        intro: `${m.customerName ?? "Tu cliente"} pagó un envío express${m.customerComuna ? ` a ${m.customerComuna}` : ""} a las ${timeCL(m.createdAt)} y todavía no se ha creado el envío en Uber. Mientras más espere, más tarde le llega.`,
-        facts: [
-          ["Pagado", `Hoy a las ${timeCL(m.createdAt)}`],
-          ...(items ? [["Productos", items] as [string, string]] : []),
-        ],
-        cta: { label: "Despachar ahora", url: appUrl(m.shop, `/app/orders/${numericId(m.orderId)}`) },
-        footer: "Recibes este correo porque tienes activados los recordatorios de pedidos sin despachar en Fium.",
-      }, `El pedido ${m.orderNumber} lleva ${waited} min sin despachar`, context, `reminder:${m.shop}:${m.orderId}`);
+        label: "Recordatorio",
+        title: `El pedido ${m.orderNumber} lleva ${waited} minutos sin despachar`,
+        intro: "Tu cliente pagó un envío express y todavía no se ha creado el envío en Uber. Mientras más espere, más tarde recibe su pedido.",
+        details: pendingOrderDetails(m, lines),
+        items: emailItems(lines),
+        totals: emailTotals(m, lines),
+        primary: { label: "Despachar en Fium", url: appUrl(m.shop, `/app/orders/${numericId(m.orderId)}`) },
+        secondary: { label: "Ver pedido en Shopify", url: shopifyOrderUrl(m.shop, m.orderId) },
+        footer: "Recibes este correo porque tienes activados los recordatorios de pedidos sin despachar.",
+      }, `Recordatorio: el pedido ${m.orderNumber} lleva ${waited} minutos sin despachar`, context, `reminder:${m.shop}:${m.orderId}`);
     } catch (err) {
       logError(context, err, { shop: m.shop, orderId: m.orderId });
     }
@@ -255,12 +305,11 @@ export async function sendTestNotification(shop: string, to: string): Promise<bo
   if (!config) return false;
   return deliver({ ...config, notifyEmail: to }, {
     storeName: config.contactName,
-    tone: "brand",
-    banner: "Correo de prueba",
-    title: "Los avisos de Fium llegan a este correo",
-    intro: "Si estás leyendo esto, todo quedó bien configurado. Te avisaremos aquí cuando un envío tenga un problema o haya pedidos esperando.",
-    facts: [["Tienda", shop], ["Enviado", `Hoy a las ${timeCL(new Date())}`]],
-    cta: { label: "Abrir Fium", url: appUrl(shop, "/app") },
-    footer: "Recibes este correo porque pediste un correo de prueba desde Fium.",
+    label: "Correo de prueba",
+    title: "Los avisos de Fium llegarán a este correo",
+    intro: "La configuración quedó lista. Te escribiremos aquí cuando un envío tenga un problema o un pedido esté esperando su despacho.",
+    details: [["Tienda", shop], ["Correo de avisos", to], ["Enviado", dateTimeCL(new Date())]],
+    primary: { label: "Abrir Fium", url: appUrl(shop, "/app") },
+    footer: "Recibes este correo porque pediste una prueba desde Fium.",
   }, "Prueba de avisos de Fium", "notify/test", `test:${shop}:${Date.now()}`);
 }

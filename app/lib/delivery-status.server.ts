@@ -149,7 +149,7 @@ export async function applyUberStatus(
     },
   });
   if (changed.count === 0) return live.status;
-  if (returnedReason) await notifyDeliveryProblem(delivery.id, "returned", returnedReason);
+  if (returnedReason) await notifyDeliveryProblem(delivery.id, "returned", describeIssueReason(live.issueReason));
 
   // Solo al entrar a un estado nuevo (ya filtrado arriba), para no duplicar eventos.
   const fulfillmentStatus = FULFILLMENT_EVENT_BY_STATUS[live.status];
@@ -185,7 +185,7 @@ export async function handleUberCancellation(
     data: { status: "failed", failureReason },
   });
   if (changed.count === 0) return;
-  await notifyDeliveryProblem(delivery.id, "canceled", failureReason);
+  await notifyDeliveryProblem(delivery.id, "canceled", describeIssueReason(issueReason));
   logInfo(context, "Uber canceló el envío — vuelve a 'Por despachar'", {
     shop: delivery.shop,
     orderNumber: delivery.orderNumber,

@@ -14,6 +14,7 @@ type OrderPayload = {
   id: number;
   name: string;
   note: string | null;
+  total_price: string;
   shipping_lines: Array<{ title: string; code: string | null }>;
   shipping_address: {
     name: string;
@@ -65,6 +66,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     orderNumber: order.name,
     customerName: order.shipping_address.name,
     customerComuna: order.shipping_address.city,
+    customerAddress: order.shipping_address.address1,
+    customerPhone:
+      normalizeChileanPhone(order.shipping_address.phone) ||
+      normalizeChileanPhone(order.customer?.phone) ||
+      normalizeChileanPhone(order.billing_address?.phone) ||
+      null,
+    orderTotal: Number(order.total_price) || null,
+    orderNote: order.note?.trim() || null,
   };
   try {
     await db.orderManifest.upsert({

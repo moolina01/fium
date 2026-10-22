@@ -133,6 +133,10 @@ model OrderManifest {
   orderNumber    String?
   customerName   String?
   customerComuna String?
+  customerAddress String?
+  customerPhone  String?
+  orderTotal     Float?    // Total pagado por el cliente, en pesos
+  orderNote      String?   // Nota del cliente en el checkout
   reminderSentAt DateTime? // Recordatorio de "sin despachar" ya enviado (o descartado)
   createdAt DateTime @default(now())
 
