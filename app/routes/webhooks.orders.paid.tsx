@@ -8,6 +8,7 @@ import { normalizeChileanPhone } from "../lib/phone";
 import { fulfillOrderWithTracking } from "../lib/fulfillment.server";
 import { isUberTestShop } from "../lib/test-shops.server";
 import { buildManifest, type ManifestLine } from "../lib/manifest";
+import { notifyDeliveryProblem, notifyNewOrder } from "../lib/notifications.server";
 
 type OrderPayload = {
   id: number;
@@ -59,11 +60,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const manifestLines: ManifestLine[] = (order.line_items ?? [])
     .filter((i) => i.requires_shipping !== false)
     .map((i) => ({ title: i.title, quantity: i.quantity, grams: i.grams ?? 0, unitPrice: Number(i.price) || 0 }));
+  // Número, cliente y comuna: los usan los avisos por correo (pedido nuevo y recordatorio).
+  const orderMeta = {
+    orderNumber: order.name,
+    customerName: order.shipping_address.name,
+    customerComuna: order.shipping_address.city,
+  };
   try {
     await db.orderManifest.upsert({
       where: { shop_orderId: { shop, orderId: shopifyOrderId } },
-      create: { shop, orderId: shopifyOrderId, items: manifestLines },
-      update: { items: manifestLines },
+      create: { shop, orderId: shopifyOrderId, items: manifestLines, ...orderMeta },
+      update: { items: manifestLines, ...orderMeta },
     });
   } catch (err) {
     // No bloquea: sin esto el despacho manual igual funciona, con el peso repartido.
@@ -72,6 +79,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   // Modo manual: la orden aparece en el dashboard vía Shopify API, sin crear delivery
   if (!config.autoDispatch) {
+    await notifyNewOrder(shop, shopifyOrderId);
     return new Response("OK", { status: 200 });
   }
 
@@ -168,7 +176,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // 2) Insertar — si otro webhook concurrente ya insertó, ignorar el choque (P2002)
   let inserted = true;
   try {
-    await db.delivery.create({ data: deliveryData });
+    const created = await db.delivery.create({ data: deliveryData });
+    if (created.status === "failed") await notifyDeliveryProblem(created.id, "auto_failed", created.failureReason);
   } catch (e) {
     if ((e as { code?: string })?.code === "P2002") {
       inserted = false;

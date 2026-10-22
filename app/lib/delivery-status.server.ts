@@ -2,6 +2,7 @@ import db from "../db.server";
 import { unauthenticated } from "../shopify.server";
 import { addFulfillmentEvent, cancelOrderFulfillments, type FulfillmentEventStatus } from "./fulfillment.server";
 import { logError, logInfo } from "./logger.server";
+import { notifyDeliveryProblem } from "./notifications.server";
 
 export const UBER_CANCELED_REASON =
   "Uber Direct canceló el envío (normalmente porque no encontró un courier disponible). Vuelve a despacharlo.";
@@ -135,15 +136,20 @@ export async function applyUberStatus(
     return "failed";
   }
 
-  await db.delivery.update({
-    where: { id: delivery.id },
+  // Solo si el estado sigue sin cambiar: si el webhook y el panel sincronizan a
+  // la vez, uno solo aplica el cambio (y manda el evento y el aviso por correo).
+  const returnedReason = live.status === "returned" ? uberReturnedReason(live.issueReason) : null;
+  const changed = await db.delivery.updateMany({
+    where: { id: delivery.id, status: { not: live.status } },
     data: {
       status: live.status,
       ...details,
       // Devuelto: queda el motivo para el aviso del panel y el detalle del envío.
-      ...(live.status === "returned" && { failureReason: uberReturnedReason(live.issueReason) }),
+      ...(returnedReason && { failureReason: returnedReason }),
     },
   });
+  if (changed.count === 0) return live.status;
+  if (returnedReason) await notifyDeliveryProblem(delivery.id, "returned", returnedReason);
 
   // Solo al entrar a un estado nuevo (ya filtrado arriba), para no duplicar eventos.
   const fulfillmentStatus = FULFILLMENT_EVENT_BY_STATUS[live.status];
@@ -172,10 +178,14 @@ export async function handleUberCancellation(
   context: string,
   issueReason?: string | null
 ): Promise<void> {
-  await db.delivery.update({
-    where: { id: delivery.id },
-    data: { status: "failed", failureReason: uberCanceledReason(issueReason) },
+  const failureReason = uberCanceledReason(issueReason);
+  // Solo una vez por cancelación, aunque el webhook y el panel la vean a la vez.
+  const changed = await db.delivery.updateMany({
+    where: { id: delivery.id, status: { notIn: ["failed", "canceled"] } },
+    data: { status: "failed", failureReason },
   });
+  if (changed.count === 0) return;
+  await notifyDeliveryProblem(delivery.id, "canceled", failureReason);
   logInfo(context, "Uber canceló el envío — vuelve a 'Por despachar'", {
     shop: delivery.shop,
     orderNumber: delivery.orderNumber,

@@ -5,6 +5,10 @@ import { createReadableStreamFromReadable } from "@react-router/node";
 import { type EntryContext } from "react-router";
 import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
+import { startReminderLoop } from "./lib/notifications.server";
+
+// Recordatorios por correo de pedidos sin despachar (revisa cada 2 minutos).
+startReminderLoop();
 
 export const streamTimeout = 5000;
 

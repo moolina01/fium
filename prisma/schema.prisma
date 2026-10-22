@@ -63,6 +63,11 @@ model StoreConfig {
   uberClientId     String?
   uberClientSecret String?  // cifrado
   uberCustomerId   String?
+  // Avisos por correo a la tienda (app/lib/notifications.server.ts).
+  notifyEmail      String?
+  notifyCanceled   Boolean  @default(true)   // Uber canceló o devolvió un envío
+  notifyNewOrder   Boolean  @default(false)  // Entró un pedido por despachar
+  notifyReminder   Boolean  @default(true)   // Pedido sin despachar después de REMINDER_MINUTES
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 }
@@ -124,6 +129,11 @@ model OrderManifest {
   shop      String
   orderId   String   // GID de la orden en Shopify
   items     Json     // [{ title, quantity, grams, unitPrice }] — unitPrice en pesos
+  // Datos para los avisos por correo (el recordatorio los lee sin llamar a Shopify).
+  orderNumber    String?
+  customerName   String?
+  customerComuna String?
+  reminderSentAt DateTime? // Recordatorio de "sin despachar" ya enviado (o descartado)
   createdAt DateTime @default(now())
 
   @@unique([shop, orderId])

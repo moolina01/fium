@@ -9,13 +9,26 @@ import { saveUberCredentials } from "../lib/uber-credentials.server";
 import { PACKAGE_SIZES, toPackageSize } from "../lib/package-size";
 import { FONT } from "../lib/theme";
 import { normalizeChileanPhone } from "../lib/phone";
+import { isValidEmail } from "../lib/email.server";
+import { REMINDER_MINUTES, sendTestNotification } from "../lib/notifications.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
   const [config, carrierRegistered] = await Promise.all([
     db.storeConfig.findUnique({ where: { shop: session.shop } }),
     isCarrierRegistered(session.shop, session.accessToken!),
   ]);
+  // Correo sugerido para los avisos: el de la tienda en Shopify, si aún no eligió otro.
+  let suggestedEmail: string | null = null;
+  if (!config?.notifyEmail) {
+    try {
+      const res = await admin.graphql(`#graphql
+        query ShopEmail { shop { email } }`);
+      suggestedEmail = (await res.json()).data?.shop?.email ?? null;
+    } catch {
+      // Sin sugerencia: la tienda lo escribe a mano.
+    }
+  }
   const uberConnected = !!(config?.uberClientId && config?.uberClientSecret && config?.uberCustomerId);
   return {
     // Nunca enviar el secret (ni cifrado) al navegador.
@@ -28,6 +41,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     uberWebhookUrl: `${process.env.SHOPIFY_APP_URL ?? ""}/webhooks/uber/delivery`,
     // Último aviso de Uber recibido (ISO o null): confirma que el webhook funciona.
     uberWebhookLiveAt: config?.lastUberWebhookAt?.toISOString() ?? null,
+    suggestedEmail,
+    reminderMinutes: REMINDER_MINUTES,
   };
 };
 
@@ -81,6 +96,28 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { success: autoDispatch ? "Modo automático activado." : "Modo manual activado.", intent };
   }
 
+  if (intent === "notifications" || intent === "test_email") {
+    const email = ((formData.get("notifyEmail") as string) || "").trim();
+    if (email && !isValidEmail(email)) return { error: "Ese correo no parece válido. Revísalo, ej: ventas@tutienda.cl.", intent };
+    if (intent === "test_email") {
+      if (!email) return { error: "Escribe un correo para mandar la prueba.", intent };
+      const ok = await sendTestNotification(session.shop, email);
+      return ok
+        ? { success: `Te mandamos un correo de prueba a ${email}. Si no llega en unos minutos, revisa la carpeta de spam.`, intent }
+        : { error: "No pudimos mandar el correo de prueba. Intenta de nuevo en unos minutos.", intent };
+    }
+    await db.storeConfig.update({
+      where: { shop: session.shop },
+      data: {
+        notifyEmail: email || null,
+        notifyCanceled: formData.get("notifyCanceled") === "on",
+        notifyNewOrder: formData.get("notifyNewOrder") === "on",
+        notifyReminder: formData.get("notifyReminder") === "on",
+      },
+    });
+    return { success: email ? "Avisos guardados." : "Avisos desactivados: no hay un correo configurado.", intent };
+  }
+
   if (intent === "register_carrier") {
     const result = await registerCarrierService(session.shop, session.accessToken!);
     if (result.alreadyExists) return { success: "Carrier service ya estaba registrado.", intent };
@@ -102,7 +139,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 const F = { fontFamily: FONT };
 
 export default function Settings() {
-  const { config, carrierRegistered, carrierLiveAt, uberConnected, uberWebhookUrl, uberWebhookLiveAt } = useLoaderData<typeof loader>();
+  const { config, carrierRegistered, carrierLiveAt, uberConnected, uberWebhookUrl, uberWebhookLiveAt, suggestedEmail, reminderMinutes } = useLoaderData<typeof loader>();
   const [copied, setCopied] = useState(false);
   function copyWebhookUrl() {
     navigator.clipboard?.writeText(uberWebhookUrl).then(() => {
@@ -483,6 +520,42 @@ export default function Settings() {
           </div>
         </Section>
 
+        <Section
+          title="Avisos por correo"
+          description="Te avisamos cuando un pedido necesita que hagas algo"
+        >
+          {(actionData?.intent === "notifications" || actionData?.intent === "test_email") && actionData.error && <Alert type="error">{actionData.error}</Alert>}
+          {(actionData?.intent === "notifications" || actionData?.intent === "test_email") && actionData.success && <Alert type="success">{actionData.success}</Alert>}
+          <Form method="post">
+            <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+              <Field label="Correo donde recibes los avisos">
+                <input
+                  id="notifyEmail" name="notifyEmail" type="email" autoComplete="email"
+                  defaultValue={config?.notifyEmail ?? suggestedEmail ?? ""}
+                  placeholder="ventas@tutienda.cl" style={inp}
+                />
+              </Field>
+              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                {([
+                  { name: "notifyCanceled", label: "Envío con problemas", desc: "Uber canceló o devolvió un envío, o no se pudo crear. Recomendado: el cliente pagó y no recibió su pedido.", checked: config?.notifyCanceled ?? true },
+                  { name: "notifyReminder", label: "Pedido sin despachar", desc: `Si un pedido lleva ${reminderMinutes} minutos sin despachar, te mandamos un recordatorio (uno por pedido).`, checked: config?.notifyReminder ?? true },
+                  { name: "notifyNewOrder", label: "Cada pedido nuevo", desc: "Un correo por cada pedido pagado con envío Uber. Útil si no tienes Fium abierto, pero llegan muchos.", checked: config?.notifyNewOrder ?? false },
+                ] as const).map((opt) => (
+                  <label key={opt.name} htmlFor={opt.name} style={{ display: "grid", gridTemplateColumns: "auto 1fr", columnGap: "10px", alignItems: "start", cursor: "pointer" }}>
+                    <input id={opt.name} name={opt.name} type="checkbox" defaultChecked={opt.checked} style={{ marginTop: "3px", accentColor: "#4B2BE0" }} />
+                    <span style={{ fontSize: "14px", fontWeight: 600, color: "#111827" }}>{opt.label}</span>
+                    <span style={{ gridColumn: 2, fontSize: "13px", color: "#6b7280", lineHeight: 1.5 }}>{opt.desc}</span>
+                  </label>
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                <button type="submit" name="intent" value="notifications" disabled={saving} style={btnStyle("primary", saving)}>Guardar avisos</button>
+                <button type="submit" name="intent" value="test_email" disabled={saving} style={btnStyle("secondary", saving)}>Mandar correo de prueba</button>
+              </div>
+            </div>
+          </Form>
+        </Section>
+
         {/* 4. Modo de despacho — OCULTO temporalmente: aún no lanzamos la elección
             automático/manual. El despacho sigue en "manual" por defecto (autoDispatch=false).
             Revertir: cambiar `{false && (` por `{true && (` o quitar el wrapper. */}
@@ -592,19 +665,23 @@ function Btn({ children, disabled, type, variant = "primary" }: {
     <button
       type={type}
       disabled={disabled}
-      style={{
-        padding: "8px 18px",
-        background: variant === "primary" ? (disabled ? "#9b85ec" : "#4B2BE0") : "white",
-        color: variant === "primary" ? "white" : "#374151",
-        border: variant === "primary" ? "none" : "1.5px solid #e5e7eb",
-        borderRadius: "7px", fontSize: "13px", fontWeight: "600",
-        cursor: disabled ? "not-allowed" : "pointer",
-        fontFamily: FONT,
-      }}
+      style={btnStyle(variant, disabled)}
     >
       {children}
     </button>
   );
+}
+
+function btnStyle(variant: "primary" | "secondary", disabled?: boolean): React.CSSProperties {
+  return {
+    padding: "8px 18px",
+    background: variant === "primary" ? (disabled ? "#9b85ec" : "#4B2BE0") : "white",
+    color: variant === "primary" ? "white" : "#374151",
+    border: variant === "primary" ? "none" : "1.5px solid #e5e7eb",
+    borderRadius: "7px", fontSize: "13px", fontWeight: "600",
+    cursor: disabled ? "not-allowed" : "pointer",
+    fontFamily: FONT,
+  };
 }
 
 function relTime(iso: string): string {
