@@ -25,6 +25,7 @@
 
 import db from "../db.server";
 import { decrypt } from "../lib/crypto.server";
+import { roboCourierSpec, type TestScenario, type UndeliverableAction } from "../lib/test-scenarios";
 
 // ─── URLs ────────────────────────────────────────────────────────────────────
 
@@ -366,6 +367,8 @@ export type CreateDeliveryRequest = {
   externalId?: string;            // Tu ID interno (ej: el order ID de Shopify)
   // Testing
   testMode?: boolean;             // Activa roboCourier en sandbox
+  testScenario?: TestScenario;    // Escenario del simulador (por defecto "fast")
+  undeliverableAction?: UndeliverableAction; // Qué hace el courier si no puede entregar
 };
 
 export type DeliveryResult = {
@@ -438,9 +441,10 @@ export async function createDelivery(
   // Sandbox: simula un courier automático para testing
   if (req.testMode) {
     body.test_specifications = {
-      robo_courier_specification: { mode: "auto" },
+      robo_courier_specification: roboCourierSpec(req.testScenario ?? "fast"),
     };
   }
+  if (req.undeliverableAction) body.undeliverable_action = req.undeliverableAction;
 
   const data = await uberFetch<Record<string, unknown>>(creds, "/deliveries", {
     method: "POST",

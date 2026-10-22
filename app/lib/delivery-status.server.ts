@@ -12,6 +12,7 @@ const ISSUE_REASONS_ES: Array<[RegExp, string]> = [
   [/no.?courier|courier.?unavailable|couriers?_not_available|no_driver/i, "no había conductores disponibles"],
   [/customer.*(unavailable|not.?available|no.?show|unreachable|not.?respond)/i, "el cliente no estaba disponible o no contestó"],
   [/customer.*(refus|reject)/i, "el cliente rechazó el pedido"],
+  [/cannot.?find.*address|address.?not.?found/i, "el conductor no encontró la dirección del cliente"],
   [/(address|location).*(wrong|invalid|incorrect|not.?found|inaccessible|issue)|cannot.?access|unable.?to.?access/i, "el conductor no pudo llegar a la dirección"],
   [/too.?(large|big|heavy)|oversize|overweight|does.?not.?fit|item.?size/i, "el pedido era muy grande o pesado para el conductor"],
   [/(store|merchant).*(closed|not.?ready|unavailable)|order.?not.?ready|pickup.?(issue|failed)/i, "el conductor no pudo retirar el pedido en tu tienda"],

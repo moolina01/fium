@@ -9,6 +9,7 @@ import { PACKAGE_SIZES, toPackageSize, sizeFromGrams, formatKg, effectiveSize, C
 import { normalizeChileanPhone } from "../lib/phone";
 import { fulfillOrderWithTracking } from "../lib/fulfillment.server";
 import { isUberTestShop } from "../lib/test-shops.server";
+import { TEST_SCENARIOS, UNDELIVERABLE_ACTIONS, isCancelScenario, toTestScenario, toUndeliverableAction, type TestScenario, type UndeliverableAction } from "../lib/test-scenarios";
 import { logError } from "../lib/logger.server";
 import { buildManifest, parseManifestLines, type ManifestLine } from "../lib/manifest";
 import { Bike, Car, Check, ExternalLink } from "lucide-react";
@@ -134,7 +135,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const totalGrams = orderWeightGrams(order);
   const suggestedSize = sizeFromGrams(totalGrams);
 
-  return { order, storeConfig, quote, quoteError, orderId, formattedTotal, customerPhone, missingPhone, storePhone, adminOrderUrl, totalGrams, suggestedSize };
+  // Tienda en modo prueba → se muestra el simulador de escenarios del robo-courier.
+  const testShop = isUberTestShop(session.shop);
+
+  return { order, storeConfig, quote, quoteError, orderId, formattedTotal, customerPhone, missingPhone, storePhone, adminOrderUrl, totalGrams, suggestedSize, testShop };
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
@@ -190,6 +194,10 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const externalId = order.name;
   // Robo-courier de Uber (sandbox) SOLO para la tienda de review de Shopify.
   const testMode = isUberTestShop(session.shop);
+  // Simulador: escenario y qué hacer si no se puede entregar. Solo en modo prueba;
+  // en tiendas reales no se manda nada y Uber usa su comportamiento por defecto.
+  const testScenario = testMode ? toTestScenario(formData.get("testScenario")) : undefined;
+  const undeliverableAction = testMode ? toUndeliverableAction(formData.get("undeliverableAction")) : undefined;
   // Uber exige E.164; tiendas antiguas pueden tener el teléfono guardado sin formato.
   const pickupPhone = normalizeChileanPhone(storeConfig.phone) || storeConfig.phone;
 
@@ -199,7 +207,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     delivery = await createDelivery(creds, {
       quoteId: activeQuoteId,
       pickupName: storeConfig.contactName, pickupAddress, pickupPhone, pickupNotes,
-      dropoffName: order.shippingAddress.name, dropoffAddress, dropoffPhone, dropoffNotes, manifestItems, manifestTotalValue, externalId, testMode,
+      dropoffName: order.shippingAddress.name, dropoffAddress, dropoffPhone, dropoffNotes, manifestItems, manifestTotalValue, externalId, testMode, testScenario, undeliverableAction,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "";
@@ -223,7 +231,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         delivery = await createDelivery(creds, {
           quoteId: freshQuote.id,
           pickupName: storeConfig.contactName, pickupAddress, pickupPhone, pickupNotes,
-          dropoffName: order.shippingAddress.name, dropoffAddress, dropoffPhone, dropoffNotes, manifestItems, manifestTotalValue, externalId, testMode,
+          dropoffName: order.shippingAddress.name, dropoffAddress, dropoffPhone, dropoffNotes, manifestItems, manifestTotalValue, externalId, testMode, testScenario, undeliverableAction,
         });
       } catch (e2) {
         return { error: e2 instanceof Error ? e2.message : "Error al crear el envío en Uber Direct." };
@@ -272,7 +280,7 @@ function formatClp(uberAmount: number): string {
 }
 
 export default function OrderDetail() {
-  const { order, storeConfig, quote: initialQuote, quoteError, formattedTotal, customerPhone, storePhone, adminOrderUrl, totalGrams, suggestedSize } = useLoaderData<typeof loader>();
+  const { order, storeConfig, quote: initialQuote, quoteError, formattedTotal, customerPhone, storePhone, adminOrderUrl, totalGrams, suggestedSize, testShop } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   // Si al confirmar la cotización había vencido y Uber subió el precio, se
   // muestra la cotización nueva y hay que volver a confirmar.
@@ -294,6 +302,9 @@ export default function OrderDetail() {
   const [packageSize, setPackageSize] = useState<string>(
     carOnly ? CAR_ONLY_SIZE : suggestedSize ?? storeConfig.packageSize ?? "medium"
   );
+  // Simulador de pruebas (solo tiendas en modo prueba).
+  const [testScenario, setTestScenario] = useState<TestScenario>("fast");
+  const [undeliverableAction, setUndeliverableAction] = useState<UndeliverableAction>("return");
   const effectivePhone = customerPhone || manualPhone;
   const canSubmit = !!effectivePhone && !!quote;
 
@@ -514,6 +525,80 @@ export default function OrderDetail() {
           </div>
         </div>
 
+        {/* Simulador de pruebas — solo tiendas en modo prueba (robo-courier de Uber) */}
+        {testShop && (
+          <div style={{ background: F.surface, borderRadius: "12px", border: `1.5px dashed ${F.warning}`, overflow: "hidden" }}>
+            <div style={{ padding: "14px 18px", borderBottom: `1px solid ${F.border}`, background: F.warningTint, display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
+              <span style={{ fontSize: "12px", fontWeight: "700", color: "#92400E", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                Simulador de pruebas
+              </span>
+              <span style={{ fontSize: "11px", color: "#92400E" }}>Modo prueba · sin conductor real ni cobro</span>
+            </div>
+            <div style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: "14px" }}>
+              <div>
+                <div id="test-scenario-label" style={{ fontSize: "13px", fontWeight: 600, color: F.ink, marginBottom: "8px" }}>
+                  ¿Qué quieres que pase con este envío?
+                </div>
+                <div role="radiogroup" aria-labelledby="test-scenario-label" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "8px" }}>
+                  {TEST_SCENARIOS.map((sc) => {
+                    const selected = testScenario === sc.value;
+                    return (
+                      <button
+                        key={sc.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        onClick={() => setTestScenario(sc.value)}
+                        style={{
+                          textAlign: "left", cursor: "pointer", padding: "10px 12px", borderRadius: "10px", fontFamily: FONT,
+                          border: `1.5px solid ${selected ? F.brand : F.border}`,
+                          background: selected ? F.brandTint : F.surface,
+                          display: "flex", flexDirection: "column", gap: "2px",
+                        }}
+                      >
+                        <span style={{ fontSize: "13px", fontWeight: 600, color: selected ? F.brand : F.ink }}>{sc.label}</span>
+                        <span style={{ fontSize: "12px", color: F.muted }}>{sc.hint}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              {isCancelScenario(testScenario) && (
+                <div>
+                  <div id="undeliverable-label" style={{ fontSize: "13px", fontWeight: 600, color: F.ink, marginBottom: "8px" }}>
+                    Si no puede entregar, el conductor debe…
+                  </div>
+                  <div role="radiogroup" aria-labelledby="undeliverable-label" style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                    {UNDELIVERABLE_ACTIONS.map((a) => {
+                      const selected = undeliverableAction === a.value;
+                      return (
+                        <button
+                          key={a.value}
+                          type="button"
+                          role="radio"
+                          aria-checked={selected}
+                          onClick={() => setUndeliverableAction(a.value)}
+                          style={{
+                            cursor: "pointer", padding: "8px 14px", borderRadius: "99px", fontFamily: FONT, fontSize: "13px", fontWeight: 600,
+                            border: `1.5px solid ${selected ? F.brand : F.border}`,
+                            background: selected ? F.brandTint : F.surface,
+                            color: selected ? F.brand : F.text,
+                          }}
+                        >
+                          {a.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              <div style={{ fontSize: "12px", color: F.muted, lineHeight: 1.6 }}>
+                El conductor de prueba de Uber siempre llega en el mismo auto de ejemplo: el vehículo no depende del tamaño ni del peso.
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Cotización */}
         <div style={{ background: F.surface, borderRadius: "12px", border: `1px solid ${F.border}`, overflow: "hidden" }}>
           <div style={{ padding: "14px 18px", borderBottom: `1px solid ${F.border}`, background: F.bg }}>
@@ -560,6 +645,12 @@ export default function OrderDetail() {
                   <input type="hidden" name="manualPhone" value={manualPhone} />
                   <input type="hidden" name="dropoffNotes" value={order.note ?? ""} />
                   <input type="hidden" name="packageSize" value={packageSize} />
+                  {testShop && (
+                    <>
+                      <input type="hidden" name="testScenario" value={testScenario} />
+                      <input type="hidden" name="undeliverableAction" value={undeliverableAction} />
+                    </>
+                  )}
                   <button
                     type="button"
                     onClick={() => { if (canSubmit) setShowConfirm(true); }}
@@ -605,8 +696,13 @@ export default function OrderDetail() {
                           ¿Crear el envío ahora?
                         </h3>
                         <p style={{ fontSize: "13px", color: F.muted, lineHeight: 1.6, margin: "0 0 20px" }}>
-                          Uber Direct le cobrará <strong>{formattedFee}</strong> a tu cuenta y asignará un repartidor
-                          de inmediato para retirar en tu tienda. Esta acción no se puede deshacer.
+                          {testShop ? (
+                            <>Envío de prueba: <strong>{TEST_SCENARIOS.find((sc) => sc.value === testScenario)?.label}</strong>.
+                            Lo hace el conductor de prueba de Uber, sin cobro.</>
+                          ) : (
+                            <>Uber Direct le cobrará <strong>{formattedFee}</strong> a tu cuenta y asignará un repartidor
+                            de inmediato para retirar en tu tienda. Esta acción no se puede deshacer.</>
+                          )}
                         </p>
                         <div style={{ display: "flex", gap: "10px" }}>
                           <button
