@@ -1006,7 +1006,7 @@ function OrderTable({ orders, onDismiss }: { orders: Order[]; onDismiss: (order:
                   textDecoration: "none", whiteSpace: "nowrap",
                 }}
               >
-                {order.autoDispatchFailed ? "Reintentar envío" : "Enviar con Uber Direct"}
+                {order.autoDispatchFailed ? "Reintentar envío" : "Envío express"}
               </Link>
             </div>
           </div>
