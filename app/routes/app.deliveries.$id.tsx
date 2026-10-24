@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Link, useActionData, useFetcher, useLoaderData } from "react-router";
+import { Link, useActionData, useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
@@ -176,6 +176,18 @@ export default function DeliveryDetail() {
     // Solo al abrir el envío.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [delivery.id, delivery.status]);
+  // Mientras el envío sigue en curso, recargar cada 15 s para que el estado, el
+  // conductor y la hora de llegada avancen solos (el loader consulta a Uber).
+  // Se pausa con la pestaña oculta para no gastar llamadas a Uber.
+  const revalidator = useRevalidator();
+  const inProgress = !["delivered", "canceled", "returned", "failed"].includes(delivery.status);
+  useEffect(() => {
+    if (!inProgress) return;
+    const id = setInterval(() => {
+      if (document.visibilityState === "visible" && revalidator.state === "idle") revalidator.revalidate();
+    }, 15_000);
+    return () => clearInterval(id);
+  }, [inProgress, revalidator]);
   const actionData = useActionData<typeof action>();
   const fetcher = useFetcher<{ error?: string }>();
   const busy = fetcher.state !== "idle";
