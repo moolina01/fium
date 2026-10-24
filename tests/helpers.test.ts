@@ -25,7 +25,7 @@ describe("teléfonos chilenos → E.164 (lo exige Uber)", () => {
 
 describe("tamaño del paquete según peso", () => {
   it.each([
-    [0, null], [1500, "small"], [2000, "small"], [2001, "medium"], [7000, "medium"], [12000, "large"], [12001, "xlarge"], [33000, "xlarge"],
+    [0, null], [1500, "small"], [2000, "small"], [2001, "medium"], [7000, "medium"], [11340, "large"], [11341, "xlarge"], [33000, "xlarge"],
   ])("%i g → %s", (grams, size) => {
     expect(sizeFromGrams(grams)).toBe(size);
   });
