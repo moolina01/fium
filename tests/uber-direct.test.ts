@@ -47,7 +47,14 @@ describe("createDelivery", () => {
     await createDelivery(creds, req);
     const body = sentBody();
     expect(body.test_specifications).toBeUndefined();
-    expect(body.undeliverable_action).toBeUndefined();
+    expect(body.undeliverable_action).toBe("return"); // siempre explícito
+  });
+
+  it("tienda real con 'dejar en la puerta' configurado", async () => {
+    await createDelivery(creds, { ...req, undeliverableAction: "leave_at_door" });
+    const body = sentBody();
+    expect(body.undeliverable_action).toBe("leave_at_door");
+    expect(body.test_specifications).toBeUndefined();
   });
 
   it("modo prueba: robo-courier con el escenario elegido", async () => {

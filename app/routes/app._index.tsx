@@ -8,7 +8,7 @@ import { getDelivery, cancelDelivery, getStoreUberCreds, type UberCreds } from "
 import { getSetupChecklist, type SetupChecklist } from "../lib/setup.server";
 import { saveUberCredentials } from "../lib/uber-credentials.server";
 import { logError } from "../lib/logger.server";
-import { applyUberStatus } from "../lib/delivery-status.server";
+import { applyUberStatus, reopenReturnedDelivery } from "../lib/delivery-status.server";
 import { Bike, Car, Check, ChevronRight, Motorbike, Phone } from "lucide-react";
 import { FONT } from "../lib/theme";
 import { CountUp } from "../components/CountUp";
@@ -328,7 +328,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session, redirect } = await authenticate.admin(request);
   const formData = await request.formData();
   const intent = formData.get("intent") as string;
 
@@ -358,6 +358,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       logError("dashboard/register-carrier", e, { shop: session.shop });
       return { error: "Error al activar Fium en el checkout. Intenta de nuevo." };
     }
+  }
+
+  // Reenviar un pedido devuelto: se reabre en Shopify y en Fium (queda como un
+  // envío fallido, igual que cuando Uber cancela) y se abre para despacharlo de nuevo.
+  if (intent === "resend_returned") {
+    const result = await reopenReturnedDelivery(admin, session.shop, (formData.get("deliveryId") as string) || "");
+    if ("error" in result) return { error: result.error };
+    throw redirect(`/app/orders/${result.orderId}`);
   }
 
   if (intent === "ack_returned") {
@@ -601,7 +609,7 @@ export default function Index() {
     const returned = before.find(
       (d) => !stillActive.has(d.id) && history.some((h) => h.id === d.id && h.status === "returned")
     );
-    if (returned) showToast(`Pedido ${returned.orderNumber} devuelto a tu tienda`, { isError: true });
+    if (returned) showToast(`Pedido ${returned.orderNumber} vuelve a tu tienda`, { isError: true });
     const delivered = before.find(
       (d) => !stillActive.has(d.id) && history.some((h) => h.id === d.id && h.status === "delivered")
     );
@@ -1041,9 +1049,11 @@ function ReturnedAlerts({ alerts }: { alerts: ReturnedAlert[] }) {
   // Se oculta al tiro al apretar "Entendido", sin esperar la recarga.
   const ackingId = fetcher.state !== "idle" ? (fetcher.formData?.get("deliveryId") as string) : null;
   const visible = alerts.filter((a) => a.id !== ackingId);
+  const error = fetcher.state === "idle" ? (fetcher.data as { error?: string } | undefined)?.error : undefined;
   if (visible.length === 0) return null;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "8px", ...T }}>
+      {error && <div role="alert" style={{ fontSize: "13px", color: "#B91C1C" }}>{error}</div>}
       {visible.map((a, i) => (
         <div key={a.id} role="alert" style={{
           display: "flex", alignItems: "flex-start", gap: "12px", flexWrap: "wrap",
@@ -1056,12 +1066,12 @@ function ReturnedAlerts({ alerts }: { alerts: ReturnedAlert[] }) {
           }} />
           <div style={{ flex: "1 1 260px", minWidth: 0 }}>
             <div style={{ fontSize: "14px", fontWeight: 700, color: "#7F1D1D" }}>
-              Pedido {a.orderNumber} devuelto a tu tienda
+              Pedido {a.orderNumber} vuelve a tu tienda
               <span style={{ fontSize: "12px", fontWeight: 500, color: "#B91C1C", marginLeft: "8px" }}>{a.timeAgo}</span>
             </div>
             <div style={{ fontSize: "13px", color: "#7F1D1D", marginTop: "3px", lineHeight: 1.5 }}>
-              {a.reason ?? "El conductor no pudo entregar el pedido y lo devolvió a tu tienda."}{" "}
-              Coordina con {a.customerName} un nuevo envío o el reembolso desde Shopify.
+              {a.reason ?? "El conductor no pudo entregar el pedido y lo trae de vuelta a tu tienda."}{" "}
+              Asegúrate de que alguien lo reciba; Uber cobra el viaje de vuelta. Después coordina con {a.customerName} un nuevo envío o el reembolso en Shopify.
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "6px", marginLeft: "auto" }}>
@@ -1072,6 +1082,14 @@ function ReturnedAlerts({ alerts }: { alerts: ReturnedAlert[] }) {
             >
               Ver detalle
             </Link>
+            <button
+              type="button"
+              className="fu-ghost-btn"
+              onClick={() => fetcher.submit({ intent: "resend_returned", deliveryId: a.id }, { method: "post" })}
+              style={{ color: "#B91C1C", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit" }}
+            >
+              Reenviar
+            </button>
             <button
               type="button"
               className="fu-btn"
@@ -1536,7 +1554,7 @@ function StatusDot({ status }: { status: string }) {
     dropoff:         { label: "Camino al cliente", color: "#4B2BE0" },
     delivered:       { label: "Entregado",         color: "#1D9E75" },
     canceled:        { label: "Cancelado",         color: "#DC2626" },
-    returned:        { label: "Devuelto",          color: "#DC2626" },
+    returned:        { label: "Vuelve a la tienda", color: "#DC2626" },
   };
   const s = map[status] ?? { label: status, color: "#9ca3af" };
   return (

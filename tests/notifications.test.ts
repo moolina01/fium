@@ -140,6 +140,9 @@ describe("aviso de envío con problemas", () => {
     await notifyDeliveryProblem("d1", "returned", null);
     expect(sent()[0].subject).toBe("Acción requerida: el pedido #1012 vuelve a tu tienda");
     expect(sent()[0].text).toContain("/app/deliveries/d1");
+    // "returned" = el conductor viene de vuelta, todavía no llega.
+    expect(sent()[0].text).toContain("viene de vuelta a tu tienda");
+    expect(sent()[0].text).toContain("Uber cobra el viaje de vuelta");
   });
 
   it("no se manda si la tienda apagó estos avisos", async () => {

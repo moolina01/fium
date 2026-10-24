@@ -167,9 +167,9 @@ const PROBLEM_COPY: Record<ProblemKind, {
   returned: {
     subject: (n) => `Acción requerida: el pedido ${n} vuelve a tu tienda`,
     title: (n) => `El pedido ${n} no se pudo entregar`,
-    intro: "El conductor está devolviendo el pedido a tu tienda. Cuando lo recibas, contacta al cliente para coordinar una nueva entrega.",
+    intro: "El conductor viene de vuelta a tu tienda con el pedido: asegúrate de que alguien lo reciba. Uber cobra el viaje de vuelta. Después contacta al cliente para reenviarlo desde Fium o reembolsarlo en Shopify.",
     notice: "Motivo informado por Uber",
-    event: "Devuelto",
+    event: "Inicio de la devolución",
     cta: "Ver el envío en Fium",
   },
   auto_failed: {

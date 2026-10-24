@@ -33,12 +33,15 @@ export function uberCanceledReason(reason: string | null | undefined): string {
   return es ? `Uber Direct canceló el envío: ${es}. Vuelve a despacharlo.` : UBER_CANCELED_REASON;
 }
 
-/** Texto para la tienda cuando Uber devuelve el pedido. */
+/**
+ * Texto para la tienda cuando Uber devuelve el pedido. "returned" en Uber significa
+ * que se inició el viaje de vuelta, no que el pedido ya llegó: por eso "lo trae de vuelta".
+ */
 export function uberReturnedReason(reason: string | null | undefined): string {
   const es = describeIssueReason(reason);
   return es
-    ? `El conductor no pudo entregar el pedido (${es}) y lo devolvió a tu tienda.`
-    : "El conductor no pudo entregar el pedido y lo devolvió a tu tienda.";
+    ? `El conductor no pudo entregar el pedido (${es}) y lo trae de vuelta a tu tienda.`
+    : "El conductor no pudo entregar el pedido y lo trae de vuelta a tu tienda.";
 }
 
 const VALID_STATUSES = ["pending", "pickup", "pickup_complete", "dropoff", "delivered", "canceled", "returned"];
@@ -197,4 +200,26 @@ export async function handleUberCancellation(
   } catch (err) {
     logError(context, err, { deliveryId: delivery.id });
   }
+}
+
+/**
+ * La tienda quiere reenviar un pedido que Uber devolvió: se reabre en Shopify
+ * (se cancela el fulfillment) y en Fium queda como envío fallido, igual que
+ * cuando Uber cancela, para despacharlo de nuevo desde el detalle del pedido.
+ */
+export async function reopenReturnedDelivery(
+  admin: Parameters<typeof cancelOrderFulfillments>[0],
+  shop: string,
+  deliveryId: string
+): Promise<{ orderId: string } | { error: string }> {
+  const delivery = await db.delivery.findFirst({ where: { id: deliveryId, shop, status: "returned" } });
+  if (!delivery) return { error: "Este envío ya no está devuelto. Recarga la página." };
+  const reopened = await cancelOrderFulfillments(admin, delivery.orderId, "resend-returned");
+  if (!reopened) return { error: "No pudimos reabrir el pedido en Shopify. Intenta de nuevo en unos segundos." };
+  await db.delivery.updateMany({
+    where: { id: delivery.id, status: "returned" },
+    data: { status: "failed", attentionAckAt: new Date() },
+  });
+  logInfo("resend-returned", "Pedido devuelto reabierto para reenviar", { shop, orderNumber: delivery.orderNumber });
+  return { orderId: delivery.orderId.split("/").pop() ?? "" };
 }

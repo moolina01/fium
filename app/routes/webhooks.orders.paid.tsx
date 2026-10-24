@@ -9,6 +9,7 @@ import { fulfillOrderWithTracking } from "../lib/fulfillment.server";
 import { isUberTestShop } from "../lib/test-shops.server";
 import { buildManifest, type ManifestLine } from "../lib/manifest";
 import { notifyDeliveryProblem, notifyNewOrder } from "../lib/notifications.server";
+import { toUndeliverableAction } from "../lib/test-scenarios";
 
 type OrderPayload = {
   id: number;
@@ -166,6 +167,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       manifestItems: manifest.items,
       manifestTotalValue: manifest.totalValue,
       externalId: order.name,
+      undeliverableAction: toUndeliverableAction(config.undeliverableAction),
       // Robo-courier de Uber (sandbox) SOLO para la tienda de review de Shopify.
       testMode: isUberTestShop(shop),
     });

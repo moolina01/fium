@@ -12,6 +12,7 @@ import { normalizeChileanPhone } from "../lib/phone";
 import { isValidEmail } from "../lib/email.server";
 import { REMINDER_MINUTES, sendTestNotification } from "../lib/notifications.server";
 import { WEEKDAYS, describeHours, hoursFromConfig, isTime } from "../lib/dispatch-hours";
+import { toUndeliverableAction } from "../lib/test-scenarios";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
@@ -87,6 +88,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const carOnly = formData.get("carOnly") === "true";
     await db.storeConfig.update({ where: { shop: session.shop }, data: { carOnly } });
     return { success: carOnly ? "Listo: tus envíos se pedirán siempre en auto." : "Listo: el vehículo se elegirá según el peso del pedido.", intent };
+  }
+
+  if (intent === "undeliverable") {
+    const action = toUndeliverableAction(formData.get("undeliverableAction"));
+    await db.storeConfig.update({ where: { shop: session.shop }, data: { undeliverableAction: action } });
+    return {
+      success: action === "leave_at_door"
+        ? "Listo: si el cliente no está, el conductor dejará el pedido en la puerta."
+        : "Listo: si el cliente no está, el conductor traerá el pedido de vuelta a tu tienda.",
+      intent,
+    };
   }
 
   if (intent === "dispatch") {
@@ -534,6 +546,58 @@ export default function Settings() {
           </div>
           <div style={{ fontSize: "12px", color: "#9ca3af", marginTop: "10px", lineHeight: 1.5 }}>
             Uber solo asegura un auto cuando el paquete se marca como Extra grande, así que con “Siempre auto” Fium marca todos los pedidos así. El precio que ve tu cliente en el checkout no cambia.
+          </div>
+        </Section>
+
+        <Section
+          title="Si el cliente no está"
+          description="Qué hace el conductor cuando no logra entregar: el cliente no está, no contesta o no abre"
+        >
+          {actionData?.intent === "undeliverable" && actionData?.success && <Alert type="success">{actionData?.success}</Alert>}
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            {([
+              { value: "return", label: "Traerlo de vuelta a tu tienda", badge: "Recomendado", desc: "El pedido vuelve a tu tienda y coordinas con el cliente un nuevo envío o el reembolso. Uber cobra el viaje de vuelta." },
+              { value: "leave_at_door", label: "Dejarlo en la puerta", badge: null, desc: "El conductor deja el pedido en la puerta y le saca una foto como prueba. No hay viaje de vuelta, pero el pedido queda sin nadie que lo reciba." },
+            ] as const).map((opt) => {
+              const isSelected = (config?.undeliverableAction === "leave_at_door" ? "leave_at_door" : "return") === opt.value;
+              return (
+                <Form key={opt.value} method="post">
+                  <input type="hidden" name="intent" value="undeliverable" />
+                  <input type="hidden" name="undeliverableAction" value={opt.value} />
+                  <button type="submit" aria-pressed={isSelected} style={{
+                    width: "100%", textAlign: "left", cursor: "pointer",
+                    background: isSelected ? "#fafafe" : "white",
+                    border: `1.5px solid ${isSelected ? "#4B2BE0" : "#e5e7eb"}`,
+                    borderRadius: "8px", padding: "14px 16px",
+                    display: "flex", alignItems: "center", justifyContent: "space-between",
+                    gap: "12px", ...F,
+                  }}>
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "14px", fontWeight: "600", color: "#111827", marginBottom: "2px" }}>
+                        {opt.label}
+                        {opt.badge && (
+                          <span style={{ fontSize: "11px", fontWeight: 600, color: "#4B2BE0", background: "#EEEDFE", borderRadius: "99px", padding: "1px 8px" }}>
+                            {opt.badge}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: "13px", color: "#6b7280" }}>{opt.desc}</div>
+                    </div>
+                    <div style={{
+                      width: "18px", height: "18px", borderRadius: "50%", flexShrink: 0,
+                      border: `2px solid ${isSelected ? "#4B2BE0" : "#d1d5db"}`,
+                      background: isSelected ? "#4B2BE0" : "white",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                    }}>
+                      {isSelected && <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: "white" }} />}
+                    </div>
+                  </button>
+                </Form>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: "12px", color: "#9ca3af", marginTop: "10px", lineHeight: 1.5 }}>
+            Antes de decidir, el conductor intenta contactar al cliente por teléfono.
           </div>
         </Section>
 

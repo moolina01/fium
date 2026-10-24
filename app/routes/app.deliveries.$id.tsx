@@ -6,7 +6,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getDelivery, cancelDelivery, getStoreUberCreds } from "../services/uber-direct.server";
 import { logError } from "../lib/logger.server";
-import { applyUberStatus, describeVehicle } from "../lib/delivery-status.server";
+import { applyUberStatus, describeVehicle, reopenReturnedDelivery } from "../lib/delivery-status.server";
 import { colors as F, FONT, DISPLAY_FONT } from "../lib/theme";
 import { formatTimeCL } from "../lib/dispatch-hours";
 
@@ -87,10 +87,16 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
-  const { session, redirect } = await authenticate.admin(request);
+  const { admin, session, redirect } = await authenticate.admin(request);
   const deliveryId = params.id!;
   const formData = await request.formData();
   const intent = formData.get("intent") as string;
+
+  if (intent === "resend_returned") {
+    const result = await reopenReturnedDelivery(admin, session.shop, deliveryId);
+    if ("error" in result) return { error: result.error };
+    throw redirect(`/app/orders/${result.orderId}`);
+  }
 
   if (intent === "cancel_delivery") {
     const delivery = await db.delivery.findFirst({ where: { id: deliveryId, shop: session.shop } });
@@ -160,7 +166,7 @@ const STATUS_MAP: Record<string, { label: string; color: string; description: st
   dropoff: { label: "Camino al cliente", color: F.brand, description: "El conductor está llegando donde el cliente." },
   delivered: { label: "Entregado", color: F.success, description: "El pedido fue entregado." },
   canceled: { label: "Cancelado", color: F.danger, description: "Este envío fue cancelado." },
-  returned: { label: "Devuelto", color: F.danger, description: "El courier no pudo entregar y devolvió el paquete." },
+  returned: { label: "Vuelve a la tienda", color: F.danger, description: "El conductor no pudo entregar y trae el pedido de vuelta a tu tienda." },
   failed: { label: "Falló el despacho", color: F.danger, description: "No se pudo crear el envío en Uber Direct." },
 };
 
@@ -240,8 +246,22 @@ export default function DeliveryDetail() {
             <div style={{ fontSize: "13px", color: "#7F1D1D", lineHeight: "1.6" }}>
               {delivery.status === "returned"
                 ? <>
-                    {delivery.failureReason ?? "El conductor no pudo entregar el pedido y lo devolvió a tu tienda."}{" "}
-                    Coordina con {delivery.customerName} un nuevo envío o el reembolso desde el pedido en Shopify.
+                    {delivery.failureReason ?? "El conductor no pudo entregar el pedido y lo trae de vuelta a tu tienda."}{" "}
+                    Asegúrate de que alguien lo reciba; Uber cobra el viaje de vuelta. Después coordina con {delivery.customerName} un nuevo envío o el reembolso en Shopify.
+                    <div style={{ marginTop: "10px" }}>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => fetcher.submit({ intent: "resend_returned" }, { method: "post" })}
+                        style={{
+                          padding: "7px 14px", border: "none", borderRadius: "6px", cursor: busy ? "default" : "pointer",
+                          background: F.danger, color: "white", fontSize: "13px", fontWeight: 600, fontFamily: "inherit",
+                          opacity: busy ? 0.6 : 1,
+                        }}
+                      >
+                        Reenviar pedido
+                      </button>
+                    </div>
                   </>
                 : delivery.failureReason ?? "Uber Direct no pudo procesar este envío. Despacha la orden manualmente desde \"Por despachar\"."}
             </div>

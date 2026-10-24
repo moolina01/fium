@@ -139,7 +139,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // Tienda en modo prueba → se muestra el simulador de escenarios del robo-courier.
   const testShop = isUberTestShop(session.shop);
 
-  return { order, storeConfig, quote, quoteError, orderId, formattedTotal, customerPhone, missingPhone, storePhone, adminOrderUrl, totalGrams, suggestedSize, testShop };
+  // Nunca enviar el secret de Uber (ni cifrado) al navegador.
+  return { order, storeConfig: { ...storeConfig, uberClientSecret: null }, quote, quoteError, orderId, formattedTotal, customerPhone, missingPhone, storePhone, adminOrderUrl, totalGrams, suggestedSize, testShop };
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
@@ -195,10 +196,12 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const externalId = order.name;
   // Robo-courier de Uber (sandbox) SOLO para la tienda de review de Shopify.
   const testMode = isUberTestShop(session.shop);
-  // Simulador: escenario y qué hacer si no se puede entregar. Solo en modo prueba;
-  // en tiendas reales no se manda nada y Uber usa su comportamiento por defecto.
+  // Simulador: escenario solo en modo prueba. Qué hacer si no se puede entregar:
+  // lo configurado por la tienda (en modo prueba, el simulador lo puede cambiar).
   const testScenario = testMode ? toTestScenario(formData.get("testScenario")) : undefined;
-  const undeliverableAction = testMode ? toUndeliverableAction(formData.get("undeliverableAction")) : undefined;
+  const undeliverableAction = toUndeliverableAction(
+    testMode && formData.get("undeliverableAction") ? formData.get("undeliverableAction") : storeConfig.undeliverableAction
+  );
   // Uber exige E.164; tiendas antiguas pueden tener el teléfono guardado sin formato.
   const pickupPhone = normalizeChileanPhone(storeConfig.phone) || storeConfig.phone;
 
@@ -305,7 +308,9 @@ export default function OrderDetail() {
   );
   // Simulador de pruebas (solo tiendas en modo prueba).
   const [testScenario, setTestScenario] = useState<TestScenario>("fast");
-  const [undeliverableAction, setUndeliverableAction] = useState<UndeliverableAction>("return");
+  const [undeliverableAction, setUndeliverableAction] = useState<UndeliverableAction>(
+    storeConfig.undeliverableAction === "leave_at_door" ? "leave_at_door" : "return"
+  );
   const effectivePhone = customerPhone || manualPhone;
   const canSubmit = !!effectivePhone && !!quote;
 
