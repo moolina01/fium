@@ -3,7 +3,7 @@ import db from "../db.server";
 import { getDeliveryQuote, uberCredsFromConfig, UberApiError, UberNotConfiguredError } from "../services/uber-direct.server";
 import type { QuoteResult } from "../services/uber-direct.server";
 import { logError, logInfo, logDebug } from "../lib/logger.server";
-import { MAX_ORDER_WEIGHT_GRAMS } from "../lib/package-size";
+import { MAX_ITEM_WEIGHT_GRAMS, MAX_ORDER_WEIGHT_GRAMS } from "../lib/package-size";
 import { DELIVERY_WINDOW_HOURS, hoursFromConfig, isWithinDispatchHours } from "../lib/dispatch-hours";
 
 // Cache en memoria: clave = "shop|zip_destino|address1_destino", TTL = 5 min
@@ -102,6 +102,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // pueda llevar el pedido, así que no se ofrece Fium.
   if (shippable.some((i) => !i.grams || i.grams <= 0)) {
     logInfo("carrier/rates/sin-peso", "Hay productos sin peso en Shopify — sin tarifa", { shop });
+    return Response.json({ rates: [] });
+  }
+  // Un solo producto sobre el máximo de Uber no lo lleva ningún vehículo.
+  if (shippable.some((i) => (i.grams ?? 0) > MAX_ITEM_WEIGHT_GRAMS)) {
+    logInfo("carrier/rates/sobrepeso", "Un producto excede el peso máximo de Uber — sin tarifa", {
+      shop, maxItemGrams: MAX_ITEM_WEIGHT_GRAMS,
+    });
     return Response.json({ rates: [] });
   }
   const totalGrams = shippable.reduce((sum, i) => sum + (i.grams ?? 0) * (i.quantity ?? 1), 0);

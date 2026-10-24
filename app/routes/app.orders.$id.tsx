@@ -498,7 +498,7 @@ export default function OrderDetail() {
                         </span>
                       )}
                     </span>
-                    <span style={{ fontSize: "12px", color: F.muted }}>Hasta {s.maxKg} kg</span>
+                    <span style={{ fontSize: "12px", color: F.muted }}>Hasta {s.maxKg.toLocaleString("es-CL")} kg</span>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px", color: F.muted }}>
                       <VehicleIcon size={14} strokeWidth={1.75} aria-hidden="true" />
                       {VEHICLE_LABEL[s.vehicle]}

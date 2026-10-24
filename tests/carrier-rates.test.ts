@@ -104,9 +104,15 @@ describe("tarifa de Fium en el checkout", () => {
     expect((await rates(rateRequest({ destination: { address1: "Calle 1", city: "" } }))).body.rates).toEqual([]);
   });
 
-  it("productos sin peso o carrito de más de 20 kg: no aparece", async () => {
+  it("productos sin peso, un producto de más de 22,65 kg o carrito de más de 33 kg: no aparece", async () => {
     expect((await rates(rateRequest({ items: [{ grams: 0, quantity: 1 }] }))).body.rates).toEqual([]);
-    expect((await rates(rateRequest({ items: [{ grams: 10_001, quantity: 2 }] }))).body.rates).toEqual([]);
+    expect((await rates(rateRequest({ items: [{ grams: 22_651, quantity: 1 }] }))).body.rates).toEqual([]);
+    expect((await rates(rateRequest({ items: [{ grams: 11_001, quantity: 3 }] }))).body.rates).toEqual([]);
+  });
+
+  it("acepta hasta los límites de Uber: 22,65 kg por producto y 33 kg en total", async () => {
+    expect((await rates(rateRequest({ items: [{ grams: 22_650, quantity: 1 }] }))).body.rates).toHaveLength(1);
+    expect((await rates(rateRequest({ items: [{ grams: 11_000, quantity: 3 }] }))).body.rates).toHaveLength(1);
   });
 
   it("los productos que no requieren envío no cuentan", async () => {
