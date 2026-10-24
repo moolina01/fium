@@ -140,10 +140,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   let deliveries = await db.delivery.findMany({ where: { shop: session.shop } });
 
   // Sync con Uber (estado, ETA y conductor) como respaldo de los webhooks. El
-  // panel se recarga cada 30 s mientras hay envíos en curso, pero cada envío se
-  // consulta a Uber como mucho una vez cada 30 s EN TOTAL — no por pestaña ni por
+  // panel se recarga cada 15 s mientras hay envíos en curso, pero cada envío se
+  // consulta a Uber como mucho una vez cada 10 s EN TOTAL — no por pestaña ni por
   // usuario —, así las llamadas a Uber dependen solo de cuántos envíos hay en curso.
-  const SYNC_EVERY_MS = 30 * 1000;
+  // El tope va por debajo del intervalo del panel: si fueran iguales, la consulta
+  // anterior quedaría a 29,9 s y cada recarga por medio se saltaría a Uber.
+  const SYNC_EVERY_MS = 10 * 1000;
   // Credenciales de Uber de la tienda — si aún no conectó su cuenta, no sincronizamos.
   let uberCreds: UberCreds | null = null;
   try {
@@ -627,7 +629,7 @@ export default function Index() {
   }, [activeDeliveries, history]);
   useEffect(() => () => deliveredTimers.current.forEach(clearTimeout), []);
 
-  // Mientras haya envíos en curso, recargar los datos cada 30 s para que el
+  // Mientras haya envíos en curso, recargar los datos cada 15 s para que el
   // estado avance solo (el loader consulta a Uber los envíos desactualizados).
   // Se pausa con la pestaña oculta para no gastar llamadas a Uber.
   const revalidator = useRevalidator();
@@ -636,7 +638,7 @@ export default function Index() {
     if (!hasActive) return;
     const id = setInterval(() => {
       if (document.visibilityState === "visible" && revalidator.state === "idle") revalidator.revalidate();
-    }, 30_000);
+    }, 15_000);
     return () => clearInterval(id);
   }, [hasActive, revalidator]);
 
