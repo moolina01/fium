@@ -13,7 +13,7 @@ export const PACKAGE_SIZES: {
   // Referencias y medidas máximas de la guía de tamaños de Uber Direct (oct 2026).
   { value: "small", label: "Pequeño", hint: "Hasta 2 kg — cabe en una mano, como una botella de agua (20 × 8 × 15 cm)", maxKg: 2, vehicle: "moto" },
   { value: "medium", label: "Mediano", hint: "Hasta 7 kg — cabe en una bolsa de supermercado (38 × 18 × 30 cm)", maxKg: 7, vehicle: "moto" },
-  { value: "large", label: "Grande", hint: "Hasta 11,3 kg — se lleva con las dos manos, como un monitor (48 × 23 × 38 cm)", maxKg: 11.3, vehicle: "moto-auto" },
+  { value: "large", label: "Grande", hint: "Hasta 12 kg — se lleva con las dos manos, como un monitor (48 × 23 × 38 cm)", maxKg: 12, vehicle: "moto-auto" },
   { value: "xlarge", label: "Extra grande", hint: "Hasta 33 kg — como una compra de supermercado; Uber asigna siempre auto", maxKg: 33, vehicle: "auto" },
 ];
 
@@ -51,12 +51,12 @@ export const MAX_ORDER_WEIGHT_GRAMS = 33_000; // 33 kg — máximo recomendado p
 export const MAX_ITEM_WEIGHT_GRAMS = 22_650;  // 22,65 kg (50 lb) — máximo por producto
 
 // Tamaño según el peso total del pedido. Uber usa el tamaño para elegir el
-// vehículo. La moto lleva como máximo 11,34 kg (25 lb, guía de Uber), así que
-// sobre eso se manda "xlarge", que siempre va en auto.
+// vehículo: sobre 12 kg Uber asigna auto, así que se manda "xlarge", que
+// siempre va en auto y evita que una moto rechace el pedido.
 const SIZE_BY_MAX_GRAMS: Array<[number, PackageSize]> = [
   [2_000, "small"],
   [7_000, "medium"],
-  [11_340, "large"],
+  [12_000, "large"],
 ];
 
 /** Tamaño sugerido para un pedido según su peso total en gramos.

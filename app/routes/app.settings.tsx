@@ -492,7 +492,7 @@ export default function Settings() {
           {actionData?.intent === "vehicle" && actionData?.success && <Alert type="success">{actionData?.success}</Alert>}
           <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
             {([
-              { value: "false", label: "Según el peso del pedido", badge: "Recomendado", desc: "Pedidos livianos pueden ir en moto (más rápido); los de más de 11 kg van en auto." },
+              { value: "false", label: "Según el peso del pedido", badge: "Recomendado", desc: "Pedidos livianos pueden ir en moto (más rápido); los de más de 12 kg van en auto." },
               { value: "true",  label: "Siempre auto", badge: null, desc: "Todos los pedidos se piden en auto. Ideal si vendes productos pesados o voluminosos." },
             ] as const).map((opt) => {
               const isSelected = String(config?.carOnly ?? false) === opt.value;
