@@ -47,13 +47,13 @@ describe("createDelivery", () => {
     await createDelivery(creds, req);
     const body = sentBody();
     expect(body.test_specifications).toBeUndefined();
-    expect(body.undeliverable_action).toBe("return"); // siempre explícito
+    expect(body.undeliverable_action).toBe("leave_at_door"); // siempre explícito; por defecto, en la puerta
   });
 
-  it("tienda real con 'dejar en la puerta' configurado", async () => {
-    await createDelivery(creds, { ...req, undeliverableAction: "leave_at_door" });
+  it("tienda real con 'traer de vuelta' configurado", async () => {
+    await createDelivery(creds, { ...req, undeliverableAction: "return" });
     const body = sentBody();
-    expect(body.undeliverable_action).toBe("leave_at_door");
+    expect(body.undeliverable_action).toBe("return");
     expect(body.test_specifications).toBeUndefined();
   });
 

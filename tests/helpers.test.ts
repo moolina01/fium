@@ -99,7 +99,8 @@ describe("simulador de pruebas (robo-courier)", () => {
   it("valores del formulario inválidos caen en lo seguro", () => {
     expect(toTestScenario("hackeo")).toBe("fast");
     expect(toTestScenario("customer_rejected_order")).toBe("customer_rejected_order");
-    expect(toUndeliverableAction("cualquiera")).toBe("return");
+    expect(toUndeliverableAction("cualquiera")).toBe("leave_at_door");
+    expect(toUndeliverableAction("return")).toBe("return");
     expect(toUndeliverableAction("leave_at_door")).toBe("leave_at_door");
   });
 });

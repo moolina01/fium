@@ -309,7 +309,7 @@ export default function OrderDetail() {
   // Simulador de pruebas (solo tiendas en modo prueba).
   const [testScenario, setTestScenario] = useState<TestScenario>("fast");
   const [undeliverableAction, setUndeliverableAction] = useState<UndeliverableAction>(
-    storeConfig.undeliverableAction === "leave_at_door" ? "leave_at_door" : "return"
+    toUndeliverableAction(storeConfig.undeliverableAction)
   );
   const effectivePhone = customerPhone || manualPhone;
   const canSubmit = !!effectivePhone && !!quote;

@@ -23,8 +23,8 @@ export const TEST_SCENARIOS: { value: TestScenario; label: string; hint: string 
 ];
 
 export const UNDELIVERABLE_ACTIONS: { value: UndeliverableAction; label: string }[] = [
-  { value: "return", label: "Devolver a la tienda" },
   { value: "leave_at_door", label: "Dejar en la puerta" },
+  { value: "return", label: "Devolver a la tienda" },
 ];
 
 const VALID_SCENARIOS = new Set<string>(TEST_SCENARIOS.map((s) => s.value));
@@ -34,7 +34,7 @@ export function toTestScenario(v: unknown): TestScenario {
 }
 
 export function toUndeliverableAction(v: unknown): UndeliverableAction {
-  return v === "leave_at_door" ? "leave_at_door" : "return";
+  return v === "return" ? "return" : "leave_at_door";
 }
 
 export function isCancelScenario(s: TestScenario): s is UberCancelReason {

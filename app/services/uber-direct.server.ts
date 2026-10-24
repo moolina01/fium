@@ -368,7 +368,7 @@ export type CreateDeliveryRequest = {
   // Testing
   testMode?: boolean;             // Activa roboCourier en sandbox
   testScenario?: TestScenario;    // Escenario del simulador (por defecto "fast")
-  undeliverableAction?: UndeliverableAction; // Qué hace el courier si no puede entregar (por defecto, devolverlo)
+  undeliverableAction?: UndeliverableAction; // Qué hace el courier si no puede entregar (por defecto, dejarlo en la puerta)
 };
 
 export type DeliveryResult = {
@@ -446,7 +446,7 @@ export async function createDelivery(
   }
   // Siempre explícito: sin él, lo que pasa al no poder entregar dependería de la
   // configuración por defecto de Uber, que puede cambiar.
-  body.undeliverable_action = req.undeliverableAction ?? "return";
+  body.undeliverable_action = req.undeliverableAction ?? "leave_at_door";
 
   const data = await uberFetch<Record<string, unknown>>(creds, "/deliveries", {
     method: "POST",

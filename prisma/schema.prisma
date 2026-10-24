@@ -58,9 +58,9 @@ model StoreConfig {
   // con el que Uber asegura un auto (ver app/lib/package-size.ts).
   carOnly        Boolean  @default(false)
   // Qué hace el conductor si no puede entregar (cliente no está, no contesta):
-  // "return" lo trae de vuelta a la tienda (Uber cobra el viaje de vuelta) o
-  // "leave_at_door" lo deja en la puerta con foto. Se manda en cada envío.
-  undeliverableAction String @default("return")
+  // "leave_at_door" (por defecto) lo deja en la puerta con foto, o "return" lo
+  // trae de vuelta a la tienda (Uber cobra el viaje de vuelta). Se manda en cada envío.
+  undeliverableAction String @default("leave_at_door")
   // Credenciales de Uber Direct propias de cada tienda. Cada cliente conecta su
   // cuenta (con su tarjeta) y paga sus envíos directo a Uber. El client_secret se
   // guarda cifrado (AES-256-GCM, ver app/lib/crypto.server.ts).

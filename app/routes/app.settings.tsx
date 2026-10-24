@@ -556,10 +556,10 @@ export default function Settings() {
           {actionData?.intent === "undeliverable" && actionData?.success && <Alert type="success">{actionData?.success}</Alert>}
           <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
             {([
-              { value: "return", label: "Traerlo de vuelta a tu tienda", badge: "Recomendado", desc: "El pedido vuelve a tu tienda y coordinas con el cliente un nuevo envío o el reembolso. Uber cobra el viaje de vuelta." },
-              { value: "leave_at_door", label: "Dejarlo en la puerta", badge: null, desc: "El conductor deja el pedido en la puerta y le saca una foto como prueba. No hay viaje de vuelta, pero el pedido queda sin nadie que lo reciba." },
+              { value: "leave_at_door", label: "Dejarlo en la puerta", badge: "Recomendado", desc: "El conductor deja el pedido en la puerta y le saca una foto como prueba. No pagas viaje de vuelta, pero el pedido queda sin nadie que lo reciba." },
+              { value: "return", label: "Traerlo de vuelta a tu tienda", badge: null, desc: "El pedido vuelve a tu tienda y coordinas con el cliente un nuevo envío o el reembolso. Uber cobra el viaje de vuelta. Ideal para productos de alto valor." },
             ] as const).map((opt) => {
-              const isSelected = (config?.undeliverableAction === "leave_at_door" ? "leave_at_door" : "return") === opt.value;
+              const isSelected = toUndeliverableAction(config?.undeliverableAction) === opt.value;
               return (
                 <Form key={opt.value} method="post">
                   <input type="hidden" name="intent" value="undeliverable" />
