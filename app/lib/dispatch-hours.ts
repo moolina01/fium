@@ -5,10 +5,14 @@
 
 export const TZ = "America/Santiago";
 
+export type DayHours = { start: string; cutoff: string };
+
 export type DispatchHours = {
   days: number[];   // 0 = domingo … 6 = sábado
   start: string;    // "09:00" — desde qué hora se despacha
   cutoff: string;   // "19:00" — último pedido que sale el mismo día
+  // Días con un horario distinto al general (ej. sábado 18:00 a 21:00).
+  byDay?: Partial<Record<number, DayHours>>;
 };
 
 // Plazo que Fium le promete al cliente en el checkout, en horas desde el pago.
@@ -41,13 +45,55 @@ export function isTime(v: string): boolean {
   return /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
 }
 
-export function hoursFromConfig(c: { dispatchDays: string; dispatchStart: string; dispatchCutoff: string }): DispatchHours {
+export function isValidDayHours(v: unknown): v is DayHours {
+  const d = v as DayHours | null;
+  return !!d && typeof d.start === "string" && typeof d.cutoff === "string"
+    && isTime(d.start) && isTime(d.cutoff) && d.start < d.cutoff;
+}
+
+/** '{"6":{"start":"18:00","cutoff":"21:00"}}' (como se guarda en la DB) → horarios por día válidos. */
+export function parseDayHours(v: string | null | undefined): Partial<Record<number, DayHours>> {
+  if (!v) return {};
+  let raw: unknown;
+  try { raw = JSON.parse(v); } catch { return {}; }
+  if (!raw || typeof raw !== "object") return {};
+  const out: Partial<Record<number, DayHours>> = {};
+  for (const [k, d] of Object.entries(raw as Record<string, unknown>)) {
+    const day = Number(k);
+    if (Number.isInteger(day) && day >= 0 && day <= 6 && isValidDayHours(d)) out[day] = { start: d.start, cutoff: d.cutoff };
+  }
+  return out;
+}
+
+export function hoursFromConfig(c: { dispatchDays: string; dispatchStart: string; dispatchCutoff: string; dispatchDayHours?: string | null }): DispatchHours {
   const days = parseDays(c.dispatchDays);
-  return {
+  const h: DispatchHours = {
     days: days.length ? days : DEFAULT_DISPATCH_HOURS.days,
     start: isTime(c.dispatchStart) ? c.dispatchStart : DEFAULT_DISPATCH_HOURS.start,
     cutoff: isTime(c.dispatchCutoff) ? c.dispatchCutoff : DEFAULT_DISPATCH_HOURS.cutoff,
   };
+  const byDay = parseDayHours(c.dispatchDayHours);
+  if (Object.keys(byDay).length) h.byDay = byDay;
+  return h;
+}
+
+/** Horario de un día de la semana: el suyo propio o el general. */
+export function hoursOn(h: DispatchHours, weekday: number): DayHours {
+  return h.byDay?.[weekday] ?? { start: h.start, cutoff: h.cutoff };
+}
+
+/**
+ * Horario por día (lo que se edita en Configuración) → cómo se guarda: el horario
+ * más repetido queda como general y los demás días como excepciones.
+ */
+export function compactDayHours(perDay: Array<{ day: number } & DayHours>): { start: string; cutoff: string; byDay: Partial<Record<number, DayHours>> } {
+  const count = new Map<string, number>();
+  for (const d of perDay) count.set(`${d.start}-${d.cutoff}`, (count.get(`${d.start}-${d.cutoff}`) ?? 0) + 1);
+  // Empate: gana el horario del primer día de la lista (sort es estable).
+  const [start, cutoff] = [...count.entries()].sort((a, b) => b[1] - a[1])[0][0].split("-");
+  const byDay: Partial<Record<number, DayHours>> = {};
+  for (const d of perDay) if (d.start !== start || d.cutoff !== cutoff) byDay[d.day] = { start: d.start, cutoff: d.cutoff };
+  return { start, cutoff, byDay };
 }
 
 const toMinutes = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
@@ -86,13 +132,14 @@ function chileInstant(year: number, month: number, day: number, minutes: number)
  */
 export function isWithinDispatchHours(at: Date, h: DispatchHours): boolean {
   const p = chileParts(at);
-  return h.days.includes(p.weekday) && p.minutes >= toMinutes(h.start) && p.minutes < toMinutes(h.cutoff);
+  const day = hoursOn(h, p.weekday);
+  return h.days.includes(p.weekday) && p.minutes >= toMinutes(day.start) && p.minutes < toMinutes(day.cutoff);
 }
 
 /** ¿Un pedido pagado en `at` sale el mismo día? */
 export function isSameDayDispatch(at: Date, h: DispatchHours): boolean {
   const p = chileParts(at);
-  return h.days.includes(p.weekday) && p.minutes < toMinutes(h.cutoff);
+  return h.days.includes(p.weekday) && p.minutes < toMinutes(hoursOn(h, p.weekday).cutoff);
 }
 
 export type DispatchPromise = {
@@ -104,9 +151,8 @@ export type DispatchPromise = {
 /** Cuándo sale un pedido pagado en `at`. */
 export function dispatchPromise(at: Date, h: DispatchHours): DispatchPromise {
   const p = chileParts(at);
-  const startMin = toMinutes(h.start);
   if (isSameDayDispatch(at, h)) {
-    const opens = chileInstant(p.year, p.month, p.day, startMin);
+    const opens = chileInstant(p.year, p.month, p.day, toMinutes(hoursOn(h, p.weekday).start));
     return { sameDay: true, startsAt: opens > at ? opens : at, dayLabel: "hoy" };
   }
   for (let offset = 1; offset <= 7; offset++) {
@@ -115,7 +161,7 @@ export function dispatchPromise(at: Date, h: DispatchHours): DispatchPromise {
     if (!h.days.includes(next.weekday)) continue;
     return {
       sameDay: false,
-      startsAt: chileInstant(next.year, next.month, next.day, startMin),
+      startsAt: chileInstant(next.year, next.month, next.day, toMinutes(hoursOn(h, next.weekday).start)),
       dayLabel: offset === 1 ? "mañana" : `el ${DAY_LONG[next.weekday]}`,
     };
   }
@@ -160,13 +206,24 @@ export function formatTimeCL(d: Date): string {
   return d.toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: TZ });
 }
 
-/** "Lun a Sáb, 09:00 a 19:00" */
-export function describeHours(h: DispatchHours): string {
-  const ordered = WEEKDAYS.filter((d) => h.days.includes(d.value));
+function describeDays(days: number[]): string {
+  const ordered = WEEKDAYS.filter((d) => days.includes(d.value));
   const idx = ordered.map((d) => WEEKDAYS.findIndex((w) => w.value === d.value));
   const contiguous = idx.every((v, i) => i === 0 || v === idx[i - 1] + 1);
-  const days = ordered.length === 7 ? "Todos los días"
+  return ordered.length === 7 ? "Todos los días"
     : contiguous && ordered.length > 2 ? `${ordered[0].short} a ${ordered[ordered.length - 1].short}`
     : ordered.map((d) => d.short).join(", ");
-  return `${days}, ${h.start} a ${h.cutoff}`;
+}
+
+/** "Lun a Sáb, 09:00 a 19:00", o con excepciones: "Lun a Vie, 09:00 a 19:00 · Sáb, 18:00 a 21:00" */
+export function describeHours(h: DispatchHours): string {
+  // Días agrupados por horario, en el orden de la semana.
+  const groups: Array<{ hours: DayHours; days: number[] }> = [];
+  for (const d of WEEKDAYS) {
+    if (!h.days.includes(d.value)) continue;
+    const hours = hoursOn(h, d.value);
+    const g = groups.find((x) => x.hours.start === hours.start && x.hours.cutoff === hours.cutoff);
+    if (g) g.days.push(d.value); else groups.push({ hours, days: [d.value] });
+  }
+  return groups.map((g) => `${describeDays(g.days)}, ${g.hours.start} a ${g.hours.cutoff}`).join(" · ");
 }

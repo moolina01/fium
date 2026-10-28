@@ -76,6 +76,8 @@ model StoreConfig {
   dispatchDays   String   @default("1,2,3,4,5,6") // 0 = domingo … 6 = sábado
   dispatchStart  String   @default("09:00")
   dispatchCutoff String   @default("19:00")       // Último pedido que sale el mismo día
+  // Días con horario distinto al general, en JSON: {"6":{"start":"18:00","cutoff":"21:00"}}.
+  dispatchDayHours String?
   // Avisos por correo a la tienda (app/lib/notifications.server.ts).
   notifyEmail      String?
   notifyCanceled   Boolean  @default(true)   // Uber canceló o devolvió un envío

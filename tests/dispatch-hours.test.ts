@@ -4,6 +4,7 @@ import {
   describeHours,
   describePlacedAt,
   dispatchPromise,
+  compactDayHours,
   hoursFromConfig,
   isSameDayDispatch,
   isWithinDispatchHours,
@@ -123,5 +124,46 @@ describe("configuración guardada", () => {
   it("isSameDayDispatch: antes de abrir cuenta como mismo día; después del cierre, no", () => {
     expect(isSameDayDispatch(cl("2026-10-21T07:00:00-03:00"), H)).toBe(true);
     expect(isSameDayDispatch(cl("2026-10-21T19:01:00-03:00"), H)).toBe(false);
+  });
+});
+
+describe("horario distinto por día (sábado 18:00 a 21:00)", () => {
+  const SAT = { ...H, byDay: { 6: { start: "18:00", cutoff: "21:00" } } };
+
+  it("el sábado usa su propio horario; los demás días, el general", () => {
+    expect(isWithinDispatchHours(cl("2026-10-24T10:00:00-03:00"), SAT)).toBe(false);
+    expect(isWithinDispatchHours(cl("2026-10-24T18:30:00-03:00"), SAT)).toBe(true);
+    expect(isWithinDispatchHours(cl("2026-10-24T21:00:00-03:00"), SAT)).toBe(false);
+    expect(isWithinDispatchHours(WED_10, SAT)).toBe(true);
+  });
+
+  it("un pedido del sábado en la mañana sale ese día a las 18:00", () => {
+    const p = dispatchPromise(cl("2026-10-24T10:00:00-03:00"), SAT);
+    expect(p).toMatchObject({ sameDay: true, dayLabel: "hoy" });
+    expect(p.startsAt.toISOString()).toBe(cl("2026-10-24T18:00:00-03:00").toISOString());
+  });
+
+  it("un pedido del viernes en la noche sale el sábado a las 18:00", () => {
+    const p = dispatchPromise(cl("2026-10-23T22:00:00-03:00"), SAT);
+    expect(p).toMatchObject({ sameDay: false, dayLabel: "mañana" });
+    expect(p.startsAt.toISOString()).toBe(cl("2026-10-24T18:00:00-03:00").toISOString());
+  });
+
+  it("se describe con la excepción", () => {
+    expect(describeHours(SAT)).toBe("Lun a Vie, 09:00 a 19:00 · Sáb, 18:00 a 21:00");
+  });
+
+  it("se guarda el horario más repetido como general y el resto como excepción", () => {
+    const perDay = [1, 2, 3, 4, 5].map((day) => ({ day, start: "09:00", cutoff: "19:00" }));
+    expect(compactDayHours([...perDay, { day: 6, start: "18:00", cutoff: "21:00" }]))
+      .toEqual({ start: "09:00", cutoff: "19:00", byDay: { 6: { start: "18:00", cutoff: "21:00" } } });
+  });
+
+  it("se lee de la DB e ignora horarios mal guardados", () => {
+    const base = { dispatchDays: "1,2,3,4,5,6", dispatchStart: "09:00", dispatchCutoff: "19:00" };
+    expect(hoursFromConfig({ ...base, dispatchDayHours: '{"6":{"start":"18:00","cutoff":"21:00"}}' }).byDay)
+      .toEqual({ 6: { start: "18:00", cutoff: "21:00" } });
+    expect(hoursFromConfig({ ...base, dispatchDayHours: '{"6":{"start":"21:00","cutoff":"18:00"},"9":{}}' }).byDay).toBeUndefined();
+    expect(hoursFromConfig({ ...base, dispatchDayHours: "no-json" }).byDay).toBeUndefined();
   });
 });

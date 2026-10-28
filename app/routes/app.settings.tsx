@@ -11,7 +11,7 @@ import { FONT, colors as C } from "../lib/theme";
 import { normalizeChileanPhone } from "../lib/phone";
 import { isValidEmail } from "../lib/email.server";
 import { REMINDER_MINUTES, sendTestNotification } from "../lib/notifications.server";
-import { WEEKDAYS, describeHours, hoursFromConfig, isTime } from "../lib/dispatch-hours";
+import { WEEKDAYS, compactDayHours, describeHours, hoursFromConfig, hoursOn, isTime } from "../lib/dispatch-hours";
 import { toUndeliverableAction } from "../lib/test-scenarios";
 import { formatPesos, parseClpAmount } from "../lib/pricing";
 
@@ -46,7 +46,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     uberWebhookLiveAt: config?.lastUberWebhookAt?.toISOString() ?? null,
     suggestedEmail,
     reminderMinutes: REMINDER_MINUTES,
-    hours: config ? hoursFromConfig(config) : hoursFromConfig({ dispatchDays: "", dispatchStart: "", dispatchCutoff: "" }),
+    hours: config ? hoursFromConfig(config) : hoursFromConfig({ dispatchDays: "", dispatchStart: "", dispatchCutoff: "", dispatchDayHours: null }),
   };
 };
 
@@ -122,17 +122,28 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   if (intent === "hours") {
-    const days = WEEKDAYS.map((d) => d.value).filter((d) => formData.get(`day${d}`) === "on");
-    const start = (formData.get("dispatchStart") as string) || "";
-    const cutoff = (formData.get("dispatchCutoff") as string) || "";
-    if (days.length === 0) return { error: "Elige al menos un día de despacho.", intent };
-    if (!isTime(start) || !isTime(cutoff)) return { error: "Revisa las horas: usa el formato 09:00.", intent };
-    if (start >= cutoff) return { error: "La hora límite tiene que ser después de la hora de inicio.", intent };
+    // Cada día con su propio horario; se guarda el más repetido como general.
+    const perDay = WEEKDAYS.filter((d) => formData.get(`day${d.value}`) === "on").map((d) => ({
+      day: d.value as number,
+      long: d.long,
+      start: (formData.get(`start${d.value}`) as string) || "",
+      cutoff: (formData.get(`cutoff${d.value}`) as string) || "",
+    }));
+    if (perDay.length === 0) return { error: "Elige al menos un día de despacho.", intent };
+    for (const d of perDay) {
+      if (!isTime(d.start) || !isTime(d.cutoff)) return { error: `Revisa las horas del ${d.long}: usa el formato 09:00.`, intent };
+      if (d.start >= d.cutoff) return { error: `El ${d.long}, el último pedido tiene que ser después de la hora de inicio.`, intent };
+    }
+    const days = perDay.map((d) => d.day);
+    const { start, cutoff, byDay } = compactDayHours(perDay);
     await db.storeConfig.update({
       where: { shop: session.shop },
-      data: { dispatchDays: days.sort().join(","), dispatchStart: start, dispatchCutoff: cutoff },
+      data: {
+        dispatchDays: [...days].sort().join(","), dispatchStart: start, dispatchCutoff: cutoff,
+        dispatchDayHours: Object.keys(byDay).length ? JSON.stringify(byDay) : null,
+      },
     });
-    return { success: `Horario guardado: ${describeHours({ days, start, cutoff })}.`, intent };
+    return { success: `Horario guardado: ${describeHours({ days, start, cutoff, byDay })}.`, intent };
   }
 
   if (intent === "notifications" || intent === "test_email") {
@@ -403,24 +414,30 @@ export default function Settings() {
             <Form method="post">
               <input type="hidden" name="intent" value="hours" />
               <fieldset className="st-fieldset">
-                <legend className="st-label">Días de despacho</legend>
-                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-                  {WEEKDAYS.map((d) => (
-                    <label key={d.value} htmlFor={`day${d.value}`} className="st-day">
-                      <input id={`day${d.value}`} name={`day${d.value}`} type="checkbox" defaultChecked={hours.days.includes(d.value)} />
-                      {d.short}
-                    </label>
-                  ))}
+                <legend className="st-label">Días y horas de despacho</legend>
+                <p className="st-help" style={{ margin: "0 0 10px" }}>
+                  Cada día puede tener su propio horario. “Último pedido” es la última hora en que aún alcanzas a preparar y despachar.
+                </p>
+                <div className="st-hours">
+                  <div className="st-hours-row st-hours-head" aria-hidden="true">
+                    <span>Día</span><span>Desde las</span><span>Último pedido</span>
+                  </div>
+                  {WEEKDAYS.map((d) => {
+                    const dh = hoursOn(hours, d.value);
+                    return (
+                      <div key={d.value} className="st-hours-row">
+                        <label htmlFor={`day${d.value}`} className="st-hours-day">
+                          <input id={`day${d.value}`} name={`day${d.value}`} type="checkbox" defaultChecked={hours.days.includes(d.value)} />
+                          <span className="st-hours-long">{d.long[0].toUpperCase() + d.long.slice(1)}</span>
+                          <span className="st-hours-short">{d.short}</span>
+                        </label>
+                        <input name={`start${d.value}`} type="time" defaultValue={dh.start} aria-label={`${d.long}: desde las`} className="st-input" />
+                        <input name={`cutoff${d.value}`} type="time" defaultValue={dh.cutoff} aria-label={`${d.long}: último pedido`} className="st-input" />
+                      </div>
+                    );
+                  })}
                 </div>
               </fieldset>
-              <div className="st-grid2" style={{ marginTop: "16px" }}>
-                <Field label="Desde las" htmlFor="dispatchStart">
-                  <input id="dispatchStart" name="dispatchStart" type="time" defaultValue={hours.start} required className="st-input" />
-                </Field>
-                <Field label="Último pedido a las" htmlFor="dispatchCutoff" help="La última hora en que aún alcanzas a preparar y despachar.">
-                  <input id="dispatchCutoff" name="dispatchCutoff" type="time" defaultValue={hours.cutoff} required className="st-input" />
-                </Field>
-              </div>
               <p className="st-help">
                 Dentro del horario, el checkout muestra “Fium Express — llega en 1 a 3 horas”. Fuera de él (de noche o en
                 días sin despacho) Fium no se ofrece, para no prometer un envío que no alcanzas a despachar.
@@ -629,6 +646,14 @@ const CSS = `
 .st-day { display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border: 1px solid ${C.border}; border-radius: 7px; font-size: 13px; color: ${C.text}; cursor: pointer; }
 .st-day:has(input:checked) { border-color: ${C.brand}; background: #FAFAFE; }
 .st-day input { margin: 0; }
+.st-hours { display: flex; flex-direction: column; gap: 6px; }
+.st-hours-row { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr); gap: 8px; align-items: center; }
+.st-hours-head span { font-size: 12px; color: ${C.muted}; }
+.st-hours-day { display: flex; align-items: center; gap: 8px; font-size: 14px; color: ${C.text}; cursor: pointer; }
+.st-hours-day input { margin: 0; accent-color: ${C.brand}; }
+.st-hours-short { display: none; }
+.st-hours-row:has(.st-hours-day input:not(:checked)) .st-input { opacity: .4; }
+@media (max-width: 480px) { .st-hours-long { display: none; } .st-hours-short { display: inline; } }
 .st-btn { padding: 8px 18px; border-radius: 7px; font-size: 13px; font-weight: 600; font-family: inherit; cursor: pointer; white-space: nowrap; }
 .st-btn-primary { background: ${C.brand}; color: #FFFFFF; border: 1px solid ${C.brand}; }
 .st-btn-primary:hover:not(:disabled) { background: ${C.brandHover}; }

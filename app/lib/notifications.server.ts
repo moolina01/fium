@@ -29,6 +29,7 @@ type Config = {
   dispatchDays: string;
   dispatchStart: string;
   dispatchCutoff: string;
+  dispatchDayHours: string | null;
 };
 
 // ─── Links ──────────────────────────────────────────────────────────────────
@@ -94,7 +95,7 @@ async function configFor(shop: string): Promise<Config | null> {
     select: {
       shop: true, contactName: true, notifyEmail: true, notifyCanceled: true,
       notifyNewOrder: true, notifyReminder: true, autoDispatch: true,
-      dispatchDays: true, dispatchStart: true, dispatchCutoff: true,
+      dispatchDays: true, dispatchStart: true, dispatchCutoff: true, dispatchDayHours: true,
     },
   });
   if (!config || config.notifyEmail !== null) return config;
