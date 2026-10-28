@@ -13,6 +13,7 @@ import { isValidEmail } from "../lib/email.server";
 import { REMINDER_MINUTES, sendTestNotification } from "../lib/notifications.server";
 import { WEEKDAYS, describeHours, hoursFromConfig, isTime } from "../lib/dispatch-hours";
 import { toUndeliverableAction } from "../lib/test-scenarios";
+import { formatPesos, parseClpAmount } from "../lib/pricing";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
@@ -96,6 +97,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { success: "Preferencias de envío guardadas.", intent };
   }
 
+  if (intent === "pricing") {
+    const free = formData.get("pricing") === "free";
+    const amount = parseClpAmount(formData.get("freeShippingFrom"));
+    if (free && !amount) return { error: "Escribe el monto desde el que el envío es gratis, ej: 34.000.", intent };
+    const saved = await db.storeConfig.updateMany({
+      where: { shop: session.shop },
+      data: { freeShippingFrom: free ? amount : null },
+    });
+    if (saved.count === 0) return { error: "Primero guarda tu punto de retiro.", intent };
+    return {
+      success: free ? `Listo: Fium Express es gratis para tus clientes desde ${formatPesos(amount!)}.` : "Listo: tus clientes pagan el precio de Uber.",
+      intent,
+    };
+  }
+
   if (intent === "dispatch") {
     const autoDispatch = formData.get("autoDispatch") === "true";
     await db.storeConfig.update({
@@ -165,6 +181,7 @@ const F = { fontFamily: FONT };
 export default function Settings() {
   const { config, carrierRegistered, carrierLiveAt, uberConnected, uberWebhookUrl, uberWebhookLiveAt, suggestedEmail, reminderMinutes, hours } = useLoaderData<typeof loader>();
   const [copied, setCopied] = useState(false);
+  const [freeShipping, setFreeShipping] = useState(config?.freeShippingFrom != null);
   function copyWebhookUrl() {
     navigator.clipboard?.writeText(uberWebhookUrl).then(() => {
       setCopied(true);
@@ -467,6 +484,44 @@ export default function Settings() {
 
               <Actions>
                 <Btn type="submit" disabled={saving}>{savingIntent === "shipping" ? "Guardando..." : "Guardar"}</Btn>
+              </Actions>
+            </Form>
+          </Card>
+
+          <Card title="Precio para tus clientes" description="Lo que paga tu cliente por Fium Express en el checkout.">
+            {feedback("pricing")}
+            <Form method="post">
+              <input type="hidden" name="intent" value="pricing" />
+              <fieldset className="st-fieldset"
+                onChange={(e) => {
+                  const t = e.target as HTMLInputElement;
+                  if (t.name === "pricing") setFreeShipping(t.value === "free");
+                }}>
+                <legend className="st-label">Precio del envío</legend>
+                <div className="st-choices">
+                  <Choice name="pricing" value="uber" defaultChecked={config?.freeShippingFrom == null}
+                    label="El precio de Uber"
+                    desc="Tu cliente paga lo mismo que te cobra Uber por el envío." />
+                  <Choice name="pricing" value="free" defaultChecked={config?.freeShippingFrom != null}
+                    label="Gratis desde un monto de compra"
+                    desc="Sobre ese monto, Fium Express sale a $0 para tu cliente y tú pagas el envío a Uber. Bajo ese monto, tu cliente paga el precio de Uber." />
+                </div>
+              </fieldset>
+
+              {freeShipping && (
+                <>
+                  <div className="st-divider" />
+                  <Field label="Envío gratis desde" htmlFor="freeShippingFrom"
+                    help="Se compara con el subtotal de los productos del carrito.">
+                    <input id="freeShippingFrom" name="freeShippingFrom" inputMode="numeric" required
+                      defaultValue={config?.freeShippingFrom != null ? config.freeShippingFrom.toLocaleString("es-CL") : ""}
+                      placeholder="34.000" className="st-input" />
+                  </Field>
+                </>
+              )}
+
+              <Actions>
+                <Btn type="submit" disabled={saving}>{savingIntent === "pricing" ? "Guardando..." : "Guardar"}</Btn>
               </Actions>
             </Form>
           </Card>

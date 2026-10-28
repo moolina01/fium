@@ -75,6 +75,20 @@ describe("tarifa de Fium en el checkout", () => {
     expect(new Date(rate.max_delivery_date).getTime() - ahora).toBe(3 * 3_600_000);
   });
 
+  it("envío gratis desde un monto: sobre él el cliente paga $0; bajo él, el precio de Uber", async () => {
+    db.storeConfig.findUnique.mockResolvedValue({ ...store, freeShippingFrom: 34_000 });
+    // price viene ×100: 2 × $17.000 = $34.000
+    const sobre = await rates(rateRequest({ items: [{ grams: 1000, quantity: 2, price: 1_700_000 }] }));
+    expect(sobre.body.rates[0].total_price).toBe("0");
+    const bajo = await rates(rateRequest({ items: [{ grams: 1000, quantity: 1, price: 3_399_900 }] }));
+    expect(bajo.body.rates[0].total_price).toBe("295300");
+  });
+
+  it("sin envío gratis configurado, siempre el precio de Uber", async () => {
+    const { body } = await rates(rateRequest({ items: [{ grams: 1000, quantity: 1, price: 99_000_000 }] }));
+    expect(body.rates[0].total_price).toBe("295300");
+  });
+
   it("rechaza pedidos sin firma válida de Shopify", async () => {
     const { status } = await rates(rateRequest({ hmac: "firma-falsa" }));
     expect(status).toBe(401);

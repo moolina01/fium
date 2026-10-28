@@ -5,6 +5,7 @@ import type { QuoteResult } from "../services/uber-direct.server";
 import { logError, logInfo, logDebug } from "../lib/logger.server";
 import { MAX_ITEM_WEIGHT_GRAMS, MAX_ORDER_WEIGHT_GRAMS } from "../lib/package-size";
 import { DELIVERY_WINDOW_HOURS, hoursFromConfig, isWithinDispatchHours } from "../lib/dispatch-hours";
+import { cartSubtotalPesos, isFreeShipping } from "../lib/pricing";
 
 // Cache en memoria: clave = "shop|zip_destino|address1_destino", TTL = 5 min
 // Evita llamar a Uber cada vez que el cliente cambia algo menor en el checkout
@@ -95,7 +96,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   // Límite de peso: Uber no valida peso al cotizar, así que lo controla Fium.
   // Shopify manda el peso de cada producto en gramos (por unidad) en rate.items.
-  const items: Array<{ grams?: number; quantity?: number; requires_shipping?: boolean }> =
+  const items: Array<{ grams?: number; quantity?: number; price?: number; requires_shipping?: boolean }> =
     body?.rate?.items ?? [];
   const shippable = items.filter((i) => i.requires_shipping !== false);
   // Producto sin peso cargado en Shopify (0 g): no se puede garantizar que Uber
@@ -193,6 +194,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const minEta = new Date(Date.now() + DELIVERY_WINDOW_HOURS[0] * 3_600_000).toISOString();
     const maxEta = new Date(Date.now() + DELIVERY_WINDOW_HOURS[1] * 3_600_000).toISOString();
 
+    // Envío gratis desde el monto que eligió la tienda: el cliente paga $0 y la
+    // tienda igual le paga a Uber al despachar.
+    const free = isFreeShipping(cartSubtotalPesos(items), storeConfig.freeShippingFrom);
+
     return Response.json({
       rates: [
         {
@@ -205,7 +210,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           // Uber YA devuelve el fee en centavos (ej. 3828 CLP → fee = 382800), así
           // que se manda tal cual: Shopify ÷100 → 3828 CLP. (Igual que el dashboard,
           // que muestra fee/100). NO multiplicar por 100.
-          total_price: String(Math.round(quote.fee)),
+          total_price: free ? "0" : String(Math.round(quote.fee)),
           currency: "CLP",
           min_delivery_date: minEta,
           max_delivery_date: maxEta,

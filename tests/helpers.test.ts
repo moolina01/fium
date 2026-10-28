@@ -104,3 +104,23 @@ describe("simulador de pruebas (robo-courier)", () => {
     expect(toUndeliverableAction("leave_at_door")).toBe("leave_at_door");
   });
 });
+
+describe("precio para el cliente", () => {
+  it("lee montos en pesos como los escribe una tienda chilena", async () => {
+    const { parseClpAmount } = await import("../app/lib/pricing");
+    expect(parseClpAmount("34.000")).toBe(34000);
+    expect(parseClpAmount("$ 34.000")).toBe(34000);
+    expect(parseClpAmount("34000")).toBe(34000);
+    expect(parseClpAmount("")).toBeNull();
+    expect(parseClpAmount("0")).toBeNull();
+    expect(parseClpAmount("34,5")).toBeNull();
+  });
+
+  it("gratis desde el monto, inclusive", async () => {
+    const { cartSubtotalPesos, isFreeShipping } = await import("../app/lib/pricing");
+    expect(cartSubtotalPesos([{ price: 1_700_000, quantity: 2 }])).toBe(34000);
+    expect(isFreeShipping(34000, 34000)).toBe(true);
+    expect(isFreeShipping(33999, 34000)).toBe(false);
+    expect(isFreeShipping(1_000_000, null)).toBe(false);
+  });
+});
